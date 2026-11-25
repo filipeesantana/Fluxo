@@ -1,0 +1,12 @@
+{
+  "name": "Guia Financeiro",
+  "short_name": "Finanças",
+  "description": "Gerenciador financeiro pessoal local-first.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#f6f6f7",
+  "theme_color": "#f6f6f7",
+  "lang": "pt-BR",
+  "icons": [{ "src": "assets/icons/favicon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }]
+}
