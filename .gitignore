@@ -1,0 +1,27 @@
+# Dependências e ferramentas de desenvolvimento
+node_modules/
+package-lock.json
+.npm/
+playwright-report/
+test-results/
+tests/.artifacts/
+
+# Backups e exportações financeiras (nunca versionar dados pessoais)
+*backup*.json
+guia-financeiro-*.json
+guia-financeiro-*.csv
+*.csv
+dados/
+private/
+
+# Pacotes gerados
+*.zip
+
+# Ambiente local
+.env
+.env.*
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.log
