@@ -1,0 +1,77 @@
+/* Tokens de cor. Neutros levemente frios; cores semânticas usadas com moderação. */
+:root,
+:root[data-theme="light"] {
+  color-scheme: light;
+  --bg: #f6f6f7;
+  --bg-sidebar: #f0f0f2;
+  --surface: #ffffff;
+  --surface-2: #f4f4f6;
+  --surface-3: #ececef;
+  --hover: rgba(20, 20, 30, 0.045);
+  --active: rgba(20, 20, 30, 0.08);
+  --line: #e6e6ea;
+  --line-strong: #d6d6dc;
+  --text: #17171c;
+  --text-2: #55555f;
+  --text-3: #8b8b96;
+  --text-inv: #ffffff;
+
+  --accent: #3657d6;
+  --accent-hover: #2c4bc4;
+  --accent-soft: rgba(54, 87, 214, 0.1);
+  --accent-text: #2f4fc9;
+
+  --pos: #17804f;
+  --pos-soft: rgba(23, 128, 79, 0.1);
+  --neg: #b8433b;
+  --neg-soft: rgba(184, 67, 59, 0.09);
+  --warn: #a86a12;
+  --warn-soft: rgba(196, 128, 22, 0.12);
+
+  --bar: #5b6273;
+  --bar-planned: rgba(91, 98, 115, 0.28);
+  --bar-track: #ececf0;
+  --chart-grid: #ededf1;
+
+  --shadow-pop: 0 1px 2px rgba(15, 15, 25, 0.06), 0 8px 24px rgba(15, 15, 25, 0.1);
+  --shadow-modal: 0 2px 6px rgba(15, 15, 25, 0.06), 0 24px 60px rgba(15, 15, 25, 0.18);
+  --scrim: rgba(18, 18, 24, 0.28);
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #111214;
+  --bg-sidebar: #0d0e10;
+  --surface: #17181b;
+  --surface-2: #1d1e22;
+  --surface-3: #25262b;
+  --hover: rgba(255, 255, 255, 0.045);
+  --active: rgba(255, 255, 255, 0.08);
+  --line: #26272c;
+  --line-strong: #33343a;
+  --text: #ececef;
+  --text-2: #a3a3ad;
+  --text-3: #71717b;
+  --text-inv: #111214;
+
+  --accent: #7c95f5;
+  --accent-hover: #91a7ff;
+  --accent-soft: rgba(124, 149, 245, 0.14);
+  --accent-text: #9caefa;
+
+  --pos: #4cbf86;
+  --pos-soft: rgba(76, 191, 134, 0.12);
+  --neg: #ec7d73;
+  --neg-soft: rgba(236, 125, 115, 0.12);
+  --warn: #dfab55;
+  --warn-soft: rgba(223, 171, 85, 0.13);
+
+  --bar: #9aa1b2;
+  --bar-planned: rgba(154, 161, 178, 0.3);
+  --bar-track: #23242a;
+  --chart-grid: #222328;
+
+  --shadow-pop: 0 1px 2px rgba(0, 0, 0, 0.4), 0 10px 30px rgba(0, 0, 0, 0.45);
+  --shadow-modal: 0 2px 8px rgba(0, 0, 0, 0.4), 0 30px 80px rgba(0, 0, 0, 0.55);
+  --scrim: rgba(0, 0, 0, 0.5);
+}
