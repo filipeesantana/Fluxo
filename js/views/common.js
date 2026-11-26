@@ -120,6 +120,9 @@ export function kindOf(item) {
   return { cls: 'k-expense', icon: 'out', label: 'Despesa' };
 }
 
+/** Ações de linha registradas pelas telas (evita dependência circular com actions.js). */
+export const rowActions = { replicate: null, canReplicate: null };
+
 /** Linha de movimentação (sem innerHTML; texto do usuário sempre seguro). */
 export function txRow(item, { onOpen, onMenu, onToggle, showDate = false, fields } = {}) {
   const show = (k) => !fields || fields[k] !== false;
@@ -168,7 +171,9 @@ export function txRow(item, { onOpen, onMenu, onToggle, showDate = false, fields
       ),
       h('span', { class: `tx-amount num ${item.type === 'income' ? 'is-income' : item.type === 'refund' ? 'is-refund' : item.type === 'transfer' ? 'is-neutral' : ''}` }, amountText(item)),
     ),
-    onMenu ? h('button', { class: 'btn btn-ghost btn-icon btn-sm tx-more', type: 'button', 'aria-label': `Ações de ${item.description}`, 'aria-haspopup': 'menu', onclick: (ev) => { ev.stopPropagation(); onMenu(item, ev.currentTarget); } }, icon('more')) : null,
+    onMenu ? h('span', { class: 'tx-actions' },
+      rowActions.replicate && rowActions.canReplicate?.(item) ? h('button', { class: 'btn btn-ghost btn-icon btn-sm tx-act tx-rep', type: 'button', title: 'Replicar para outros meses', 'aria-label': `Replicar “${item.description}” para outros meses`, onclick: (ev) => { ev.stopPropagation(); rowActions.replicate(item); } }, icon('layers')) : null,
+      h('button', { class: 'btn btn-ghost btn-icon btn-sm tx-act tx-more', type: 'button', title: 'Mais ações', 'aria-label': `Ações de ${item.description}`, 'aria-haspopup': 'menu', onclick: (ev) => { ev.stopPropagation(); onMenu(item, ev.currentTarget); } }, icon('more'))) : null,
   );
 }
 

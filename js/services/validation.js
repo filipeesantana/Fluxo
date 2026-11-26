@@ -27,6 +27,7 @@ export function validateTransaction(t) {
   if (t.occurrenceKey != null) check(e, isOccKey(t.occurrenceKey), 'chave de ocorrência inválida');
   if (t.period != null) check(e, isMonth(t.period), 'período inválido');
   if (t.plannedAmount != null) check(e, posCents(t.plannedAmount), 'valor previsto inválido');
+  if (t.plannedDate != null) check(e, isISODate(t.plannedDate), 'data prevista inválida');
   if (t.estimated != null) check(e, typeof t.estimated === 'boolean', 'indicador de estimativa inválido');
   if (t.type === 'transfer') {
     check(e, t.sourceId && t.toAccountId, 'transferência precisa de origem e destino');

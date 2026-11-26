@@ -53,7 +53,7 @@ export function describeFrequency(rule) {
   const mode = ruleMode(rule);
   const every = n === 1 ? 'mês' : `${n} meses`;
   if (mode === 'days') return `Nos dias ${listDays(rule.days || [])}${n === 1 ? '' : `, a cada ${every}`}`;
-  if (mode === 'flex') return `${rule.perPeriod || 1}× por mês, datas flexíveis${n === 1 ? '' : ` (a cada ${every})`}`;
+  if (mode === 'flex') return `${(rule.perPeriod || 1) === 1 ? 'Mensal, data a definir' : `${rule.perPeriod}× por mês, datas flexíveis`}${n === 1 ? '' : ` (a cada ${every})`}`;
   if (mode === 'forecast') return 'Previsão mensal';
   if (rule.frequency === 'daily') return n === 1 ? 'Diária' : `A cada ${n} dias`;
   if (rule.frequency === 'weekly') return n === 1 ? 'Semanal' : n === 2 ? 'A cada 14 dias' : `A cada ${n * 7} dias`;
@@ -191,3 +191,24 @@ export function ruleOccurrences(rule, from, to) {
 
 /** Período (AAAA-MM) de uma chave de ocorrência. */
 export const periodOfKey = (key) => String(key).slice(0, 7);
+
+/**
+ * Chave da ocorrência deste mês que um lançamento já realizado (ou com data)
+ * representa ao virar a primeira ocorrência de uma série. Nunca cria uma
+ * segunda ocorrência: o próprio lançamento passa a ocupar a vaga do mês.
+ */
+export function firstKeyFor(rule, date, period) {
+  const mode = ruleMode(rule);
+  const m = date ? monthOf(date) : period;
+  if (mode === 'forecast') return null;
+  if (mode === 'flex') return `${m}#1`;
+  if (mode === 'days') {
+    const slots = rule.days || [];
+    const d = date ? Number(date.slice(8, 10)) : slots[0];
+    // O dia exato; senão a vaga mais próxima anterior (pago com atraso); senão a primeira.
+    const pick = slots.includes(d) ? d : [...slots].reverse().find((x) => x < d) ?? slots[0];
+    return `${m}@${pick}`;
+  }
+  if (rule.frequency === 'monthly' && (rule.interval || 1) === 1) return dateInMonth(m, rule.anchorDay || Number(rule.startDate.slice(8, 10)));
+  return date;
+}

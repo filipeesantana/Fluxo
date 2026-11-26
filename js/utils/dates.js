@@ -143,3 +143,13 @@ export function parseDateBR(s) {
 export function compareISO(a, b) {
   return a < b ? -1 : a > b ? 1 : 0;
 }
+
+/**
+ * Ordem das listas do mês: mais recentes primeiro; itens com data a definir no fim
+ * (sob "Data a definir"), nunca misturados aos datados.
+ */
+export function byDateDesc(a, b) {
+  const da = a.date || '', db = b.date || '';
+  if (da !== db) return !da ? 1 : !db ? -1 : da < db ? 1 : -1;
+  return (b.createdAt || 0) - (a.createdAt || 0);
+}

@@ -1,5 +1,48 @@
 # Changelog
 
+## 3.1.1 — Usabilidade, funcionalidade e confiabilidade
+
+Atualização de maturidade da 3.1: nenhuma mudança no banco local (esquema v4) nem no formato do backup (3).
+
+### Replicar e repetir lançamentos
+
+- **Causa do problema anterior**: a replicação gravava corretamente, mas o acesso era escondido. O botão de ações das linhas ficava invisível até passar o mouse, "Replicar" era o 6º item de um menu com 10 ações e convivia com "Copiar para outro mês" e "Transformar em recorrente". Ao clicar no lançamento, a edição não oferecia repetição. Detalhes em `AUDIT-v3.1.1.md`.
+- **Repetir** no formulário virou um controle direto: **Não repetir · Mensal · Personalizar**. "Mensal" já vem pronto (mesmo dia da data, sem término): basta escolher e salvar.
+- Os modelos mensais agora saem de duas perguntas simples, **Vezes por mês** e **Datas** (dia fixo, dias fixos ou a definir), mais a opção **Valor variável** para previsões de gasto. Personalizar oferece toda semana, a cada 14 dias, todo ano ou outro intervalo. Início, término e quantidade continuam opcionais.
+- **Repetir também na edição**: um lançamento já salvo pode passar a se repetir. Ele vira a 1ª ocorrência, numa única gravação e sem cópia, e pode ser desfeito.
+- **Replicar** tem um botão próprio em cada linha (e no menu), com um painel único:
+  - **Quando**: próximo mês (já escolhido), próximos 3, 6 ou 12 meses, **todos os meses** ou meses escolhidos;
+  - **Datas**: mesmo dia, outro dia, vários dias ou a definir.
+- Os períodos finitos criam **cópias previstas** avulsas. **Todos os meses** cria uma **série contínua** em que o próprio lançamento é a 1ª ocorrência; num lançamento antigo, a série começa no mês atual, sem meses atrasados.
+- **Duplicar** abre a cópia preenchida para revisar antes de salvar.
+
+### Compromissos
+
+- Ações de ocorrência diretamente no menu da linha:
+  - alterar ou definir a data (dentro do mês);
+  - editar o valor (só esta, este mês, esta e as próximas ou toda a série);
+  - ignorar ou **cancelar** a ocorrência;
+  - **adicionar ocorrência extra** no mês (ex.: uma terceira consulta).
+- **Pagamento antes ou depois do mês**: a ocorrência paga continua no compromisso do mês dela. Antes, pagar hoje a consulta de dezembro tirava o valor de dezembro e o somava em novembro. Desfazer o pagamento devolve a data e o valor previstos.
+- Resumo do mês com hierarquia: **Falta pagar** em destaque, progresso e uma linha de apoio (antes eram cinco cartões iguais).
+
+### Interface e navegação
+
+- Listas do mês na ordem certa: mais recentes primeiro e itens com **data a definir** agrupados no fim. Antes, eles se misturavam aos datados e quebravam os agrupamentos por dia.
+- No celular, os filtros secundários de Lançamentos ficam em **Filtros**: a lista aparece logo abaixo da busca.
+- As abas do Planejamento cabem numa linha no desktop; em telas estreitas, a aba atual fica sempre visível.
+- O texto do progresso concorda com o total ("1 de 2 pagas").
+
+### Correções
+
+- O identificador de ocorrências extras podia passar do limite de 64 caracteres e a gravação era recusada.
+- "Desfazer pagamento" agora devolve a data prevista quando o pagamento foi registrado em outra data.
+
+### Testes
+
+- Novos testes de aceitação pela interface (Chromium): despesa mensal, replicação para 3 meses e para todos os meses, recorrência flexível com datas por mês, pagamento individual e com outro valor, alteração de data, ocorrência extra, início e término, fontes diferentes, persistência ao fechar e reabrir o navegador, cliques duplos e Enter repetido, backup em base vazia e jornadas do dia a dia.
+- Novos testes unitários: chave da 1ª ocorrência, dia 31 em meses curtos e bissextos, 14 dias, pagamento antecipado e ordenação de itens sem data.
+
 ## 3.1.0 — Inteligência financeira, flexibilidade e refinamento
 
 Atualização incremental da 3.0: mesma identidade visual, mesmo banco local e mesmas rotas.

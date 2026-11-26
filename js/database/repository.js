@@ -3,7 +3,8 @@ import { STORES } from './schema.js';
 import { VALIDATORS, normalizeName, sameName } from '../services/validation.js';
 import { competenceOf, isCard, billFor } from '../services/cards.js';
 import { buildInstallments } from '../services/installments.js';
-import { endDateForCount, ruleOccurrences, ruleMode, parseDays } from '../services/recurrence.js';
+import { endDateForCount, ruleOccurrences, ruleMode, parseDays, firstKeyFor } from '../services/recurrence.js';
+export { firstKeyFor };
 import { createContext } from '../services/finance.js';
 import { today, addDays, currentMonth, monthOf, addMonths, firstDay, lastDay, dateInMonth } from '../utils/dates.js';
 import { uid } from '../utils/dom.js';
@@ -248,6 +249,7 @@ export function normalizeTransaction(input, previous) {
     tx.monthManual = false;
   } else if (!tx.monthManual) tx.month = competenceOf(tx, acc);
   for (const k of ['occurrenceDate', 'occurrenceKey', 'plannedAmount', 'estimated', 'forecastId', 'remainderOf', 'replicaOf']) if (tx[k] == null || tx[k] === false) delete tx[k];
+  if (tx.status !== 'done') delete tx.plannedDate;
   if (!tx.description) tx.description = defaultDescription(tx);
   return tx;
 }
@@ -293,6 +295,13 @@ export async function deleteTransaction(id) {
   return tx;
 }
 
+/** Exclui vários lançamentos de uma vez (ex.: desfazer uma replicação), numa transação. */
+export async function deleteTransactions(ids) {
+  const ops = [...new Set(ids)].filter((id) => data.transactions.has(id)).map((id) => ({ store: 'transactions', del: id }));
+  if (ops.length) await apply(ops);
+  return ops.length;
+}
+
 export async function restoreTransactions(rows) {
   await apply(rows.map((r) => ({ store: 'transactions', put: r })));
 }
@@ -318,7 +327,7 @@ export async function duplicateTransaction(id, overrides = {}) {
  * - ids determinísticos por operação (`opId:mês`): repetir o clique não duplica;
  * - tudo em uma única transação.
  */
-export async function replicateTransaction(id, { months, dateMode = 'same', day = null, status = 'planned', opId }) {
+export async function replicateTransaction(id, { months, dateMode = 'same', day = null, days = null, status = 'planned', opId }) {
   const tx = data.transactions.get(id);
   if (!tx) throw new ValidationError('Lançamento não encontrado.');
   if (tx.type === 'transfer') throw new ValidationError('Transferências não podem ser replicadas por aqui.');
@@ -328,15 +337,21 @@ export async function replicateTransaction(id, { months, dateMode = 'same', day 
   if (!opId) throw new ValidationError('Operação sem identificador.');
   const { id: _, rev, recurrenceId, occurrenceDate, occurrenceKey, period, remainderOf, plannedAmount, planId, installment, createdAt, refundOf, monthManual, month, billMonth, ...rest } = tx;
   const srcDay = tx.date ? Number(tx.date.slice(8, 10)) : 1;
+  const dayList = dateMode === 'days' ? parseDays(days || []) : null;
+  if (dateMode === 'days' && !dayList.length) throw new ValidationError('Informe ao menos um dia do mês (ex.: 5, 20).');
+  if (dateMode === 'day' && !(Number.isInteger(day) && day >= 1 && day <= 31)) throw new ValidationError('Dia do mês: de 1 a 31.');
   const ops = [];
   const created = [];
   for (const m of uniq) {
-    const cid = `${opId}:${m}`;
-    if (data.transactions.has(cid)) continue; // mesma operação repetida
-    const date = dateMode === 'flex' ? null : dateInMonth(m, dateMode === 'day' && day ? day : srcDay);
-    const row = normalizeTransaction({ ...rest, id: cid, status: date ? status : 'planned', date, period: date ? undefined : m, month: date ? undefined : m, monthManual: false, replicaOf: tx.id });
-    ops.push({ store: 'transactions', put: row });
-    created.push(row);
+    // Um lançamento por mês (ou por dia escolhido, em "vários dias"); a data nunca é inventada em "a definir".
+    const slots = dayList ? dayList.map((d) => ({ cid: `${opId}:${m}@${d}`, date: dateInMonth(m, d) }))
+      : [{ cid: `${opId}:${m}`, date: dateMode === 'flex' ? null : dateInMonth(m, dateMode === 'day' ? day : srcDay) }];
+    for (const { cid, date } of slots) {
+      if (data.transactions.has(cid)) continue; // mesma operação repetida
+      const row = normalizeTransaction({ ...rest, id: cid, status: date ? status : 'planned', date, period: date ? undefined : m, month: date ? undefined : m, monthManual: false, replicaOf: tx.id });
+      ops.push({ store: 'transactions', put: row });
+      created.push(row);
+    }
   }
   if (ops.length) await apply(ops);
   return created;
@@ -399,7 +414,7 @@ export function keyForDate(rule, date) {
  * em UMA transação. Idempotente pelo id da regra. Em previsões mensais o
  * lançamento de origem vira um gasto vinculado (consome a previsão).
  */
-export async function createRecurrence(input, firstOccurrence = null) {
+export async function createRecurrence(input, firstOccurrence = null, firstKey = null) {
   if (input.id && data.recurrences.has(input.id)) return data.recurrences.get(input.id);
   const rule = finalizeRule({
     ...input, id: input.id || uid(), description: String(input.description || '').trim().slice(0, 200), interval: input.interval || 1,
@@ -412,7 +427,7 @@ export async function createRecurrence(input, firstOccurrence = null) {
     if (ruleMode(rule) === 'forecast') {
       ops.push({ store: 'transactions', put: normalizeTransaction({ ...firstOccurrence, id: `${rule.id}:origem`, date, forecastId: rule.id, recurrenceId: null }) });
     } else {
-      const key = keyForDate(rule, date);
+      const key = firstKey || keyForDate(rule, date);
       if (key) ops.push({ store: 'transactions', put: occurrenceTx(rule, key, { ...firstOccurrence, date }) });
       else ops.push({ store: 'transactions', put: normalizeTransaction({ ...firstOccurrence, id: `${rule.id}:origem`, date }) });
     }
@@ -422,35 +437,95 @@ export async function createRecurrence(input, firstOccurrence = null) {
 }
 
 /**
- * Transforma um lançamento existente em recorrente: a regra começa na data do
- * lançamento e o próprio lançamento passa a ser a primeira ocorrência (nenhuma
- * cópia é criada). Em previsão mensal, ele passa a consumir a previsão do mês.
+ * Transforma um lançamento existente em recorrente. O lançamento passa a ser a
+ * primeira ocorrência (nenhuma cópia é criada) e o restante da série é projetado.
+ * - patch: alterações do formulário gravadas na mesma transação (edição + repetição);
+ * - anchorDay: dia do mês das próximas ocorrências (padrão: o dia da data);
+ * - lançamento sem data (previsto "a definir") vira série de datas flexíveis;
+ * - em previsão mensal, o lançamento passa a consumir a previsão do mês.
+ * O estado "pago" do original nunca é copiado para os meses seguintes.
  */
-export async function convertToRecurring(txId, { frequency = 'monthly', interval = 1, endDate = null, count = null, mode = 'fixed', days = null, perPeriod = null } = {}) {
-  const tx = data.transactions.get(txId);
-  if (!tx) throw new ValidationError('Lançamento não encontrado.');
-  if (tx.recurrenceId || tx.forecastId) throw new ValidationError('Este lançamento já faz parte de uma recorrência.');
-  if (tx.planId) throw new ValidationError('Parcelas não podem virar recorrência; use o parcelamento.');
-  if (tx.type === 'transfer' || tx.type === 'refund') throw new ValidationError('Somente receitas e despesas podem ser recorrentes.');
-  if (!tx.date) throw new ValidationError('Defina a data do lançamento antes de transformá-lo em recorrente.');
+export async function convertToRecurring(txId, { frequency = 'monthly', interval = 1, endDate = null, count = null, mode = 'fixed', days = null, perPeriod = null, anchorDay = null, estimated } = {}, patch = null) {
+  const prev = data.transactions.get(txId);
+  if (!prev) throw new ValidationError('Lançamento não encontrado.');
+  if (patch && patch.rev !== undefined && (prev.rev || 0) !== (patch.rev || 0)) {
+    throw new ValidationError('Este lançamento foi alterado em outra aba enquanto você editava. Feche o formulário e abra novamente; nada foi gravado.');
+  }
+  const tx = patch ? normalizeTransaction({ ...prev, ...patch, id: prev.id }, prev) : prev;
+  if (prev.recurrenceId || prev.forecastId) throw new ValidationError('Este lançamento já faz parte de uma recorrência.');
+  if (prev.planId) throw new ValidationError('Parcelas não podem virar recorrência; use o parcelamento.');
+  if (tx.type !== 'expense' && tx.type !== 'income') throw new ValidationError('Somente receitas e despesas podem ser recorrentes.');
   if (mode === 'forecast' && tx.type !== 'expense') throw new ValidationError('Previsão mensal é só para despesas.');
+  if (!tx.date && mode !== 'flex' && mode !== 'forecast') {
+    if (mode === 'fixed' && frequency === 'monthly') mode = 'flex';
+    else throw new ValidationError('Defina a data do lançamento antes de repeti-lo.');
+  }
+  const period = tx.date ? monthOf(tx.date) : tx.period || tx.month;
+  const fixedMonthly = mode === 'fixed' && frequency === 'monthly' && (interval || 1) === 1;
+  const anchor = fixedMonthly ? (Number.isInteger(anchorDay) && anchorDay >= 1 && anchorDay <= 31 ? anchorDay : Number(tx.date.slice(8, 10))) : undefined;
+  const startDate = mode === 'fixed' ? (fixedMonthly ? dateInMonth(period, anchor) : tx.date) : firstDay(period);
+  if (endDate && endDate < startDate) throw new ValidationError('A data de término é anterior ao início.');
   const rule = finalizeRule({
-    id: uid(), type: tx.type, description: tx.description, amount: tx.amount, startDate: mode === 'fixed' ? tx.date : firstDay(monthOf(tx.date)), endDate, count: count || undefined,
-    frequency: mode === 'fixed' ? frequency : 'monthly', interval, mode, days: mode === 'days' ? (days?.length ? days : [Number(tx.date.slice(8, 10))]) : undefined,
+    id: uid(), type: tx.type, description: tx.description, amount: tx.amount, startDate, endDate: endDate || null, count: count || undefined,
+    frequency: mode === 'fixed' ? frequency : 'monthly', interval: interval || 1, mode, anchorDay: anchor,
+    days: mode === 'days' ? (days?.length ? parseDays(days) : [Number(tx.date.slice(8, 10))]) : undefined,
     perPeriod: mode === 'flex' ? perPeriod || 1 : undefined,
-    categoryId: tx.categoryId, blockId: tx.blockId, sourceId: tx.sourceId, method: tx.method || null, restricted: tx.restricted,
-    exceptions: {}, createdAt: Date.now(), updatedAt: Date.now(),
+    categoryId: tx.categoryId || null, blockId: tx.blockId || null, sourceId: tx.sourceId || null, method: tx.method || null, restricted: tx.restricted,
+    estimated: estimated || undefined, exceptions: {}, createdAt: Date.now(), updatedAt: Date.now(),
   });
   if (!rule.count) delete rule.count;
   let linked;
   if (mode === 'forecast') linked = { ...tx, forecastId: rule.id, updatedAt: Date.now() };
   else {
-    const key = keyForDate(rule, tx.date);
-    linked = key ? { ...tx, recurrenceId: rule.id, occurrenceKey: key, occurrenceDate: mode === 'fixed' ? tx.date : undefined, period: monthOf(tx.date), updatedAt: Date.now() } : { ...tx };
-    if (mode !== 'fixed') delete linked.occurrenceDate;
+    const key = firstKeyFor(rule, tx.date, period);
+    linked = { ...tx, recurrenceId: rule.id, occurrenceKey: key, period, updatedAt: Date.now() };
+    if (mode === 'fixed' && /^\d{4}-\d{2}-\d{2}$/.test(key)) linked.occurrenceDate = key; else delete linked.occurrenceDate;
+    if (!tx.date) linked.month = period;
   }
-  await apply([{ store: 'recurrences', put: rule }, { store: 'transactions', put: linked }]);
+  await apply([{ store: 'recurrences', put: rule }, { store: 'transactions', put: normalizeTransaction(linked, prev) }]);
   return rule;
+}
+
+/**
+ * Desfaz "Transformar em recorrente": remove a regra e devolve o lançamento
+ * original como estava, numa transação. Ocorrências previstas criadas depois
+ * saem junto; pagas continuam como lançamentos avulsos.
+ */
+export async function undoConversion(ruleId, original) {
+  const ops = [];
+  if (data.recurrences.has(ruleId)) ops.push({ store: 'recurrences', del: ruleId });
+  for (const t of list('transactions')) {
+    if (t.id === original.id) continue;
+    if (t.forecastId === ruleId) ops.push({ store: 'transactions', put: { ...t, forecastId: null, updatedAt: Date.now() } });
+    else if (t.recurrenceId === ruleId) ops.push(t.status === 'planned' ? { store: 'transactions', del: t.id } : { store: 'transactions', put: { ...t, recurrenceId: null, occurrenceKey: null, occurrenceDate: null, updatedAt: Date.now() } });
+  }
+  const { rev, ...back } = original;
+  ops.push({ store: 'transactions', put: normalizeTransaction({ ...back, updatedAt: Date.now() }, null) });
+  await apply(ops);
+}
+
+/**
+ * Ocorrência extra num mês (ex.: uma terceira consulta). Fica ligada à série,
+ * conta no compromisso do mês e não altera os outros meses nem a regra.
+ */
+const extraOps = new Map();
+export async function addExtraOccurrence(ruleId, month, { date = null, amount = null, opId } = {}) {
+  const rule = data.recurrences.get(ruleId);
+  if (!rule) throw new ValidationError('Recorrência não encontrada.');
+  if (ruleMode(rule) === 'forecast') throw new ValidationError('Numa previsão mensal, registre o gasto: ele consome a previsão.');
+  if (!/^\d{4}-\d{2}$/.test(month)) throw new ValidationError('Mês inválido.');
+  if (date && monthOf(date) !== month) throw new ValidationError('Escolha uma data dentro do mês.');
+  // Mesma operação repetida (clique duplo, Enter repetido): devolve a ocorrência já criada.
+  if (opId && extraOps.has(opId) && data.transactions.has(extraOps.get(opId))) return data.transactions.get(extraOps.get(opId));
+  const used = new Set(list('transactions').filter((t) => t.recurrenceId === ruleId).map(occKeyOf));
+  for (const o of ruleOccurrences(rule, firstDay(month), lastDay(month))) used.add(o.key);
+  let n = ruleMode(rule) === 'flex' ? (rule.perPeriod || 1) + 1 : 1;
+  while (used.has(`${month}#${n}`) && n <= 31) n++;
+  if (n > 31) throw new ValidationError('Limite de ocorrências neste mês atingido.');
+  const tx = occurrenceTx(rule, `${month}#${n}`, { date: date || null, amount: amount || rule.amount, status: 'planned' });
+  if (opId) extraOps.set(opId, tx.id);
+  await apply([{ store: 'transactions', put: tx }]);
+  return tx;
 }
 
 /** Pausa a série a partir de `fromDate` (ocorrências futuras deixam de ser projetadas). */
@@ -491,7 +566,7 @@ function occurrenceTx(rule, key, overrides = {}) {
     categoryId: rule.categoryId, blockId: rule.blockId, sourceId: rule.sourceId, restricted: rule.restricted, method: rule.method || null,
     estimated: rule.estimated || undefined,
     ...(prev || {}), ...overrides,
-    date, period, month: date ? undefined : period, monthManual: prev?.monthManual || false,
+    date, period, month: overrides.monthManual ? overrides.month : date ? undefined : period, monthManual: overrides.monthManual ?? prev?.monthManual ?? false,
     // occurrenceDate só no modo de data única (o índice da v2 é único por data).
     recurrenceId: rule.id, occurrenceKey: key, occurrenceDate: ruleMode(rule) === 'fixed' ? keyDate : undefined,
     // Identidade determinística: a mesma ocorrência sempre tem o mesmo id,
@@ -529,6 +604,14 @@ export async function payItem(item, { date, amount, sourceId, keepRemainder = fa
   if (!Number.isSafeInteger(paid) || paid <= 0) throw new ValidationError('Informe um valor pago maior que zero.');
   const fields = { status: 'done', date, amount: paid, sourceId: sourceId === undefined ? item.sourceId : sourceId || null };
   if (paid !== planned) fields.plannedAmount = planned;
+  // Data efetiva diferente da prevista: guarda a prevista para o "desfazer".
+  if ((item.date || null) !== date) fields.plannedDate = item.date || null;
+  // Ocorrência de série paga antes ou depois do mês: continua no compromisso do mês dela
+  // (pagar a consulta de dezembro em novembro não esvazia dezembro nem infla novembro).
+  // No cartão vale a fatura da data da compra.
+  const period = item.period || (item.virtual ? String(item.occurrenceKey || '').slice(0, 7) : null);
+  const recurring = item.recurrenceId && !item.remainderOf;
+  if (recurring && /^\d{4}-\d{2}$/.test(period || '') && monthOf(date) !== period && !isCard(data.accounts.get(fields.sourceId))) { fields.monthManual = true; fields.month = period; }
   let tx;
   if (item.virtual) {
     const rule = data.recurrences.get(item.recurrenceId);
@@ -560,8 +643,14 @@ export async function unpayItem(id) {
   if (!tx || tx.status !== 'done') return null;
   const rest = data.transactions.get(`${id}~resto`);
   const back = { ...tx, status: 'planned', amount: tx.plannedAmount || tx.amount, updatedAt: Date.now() };
+  if ('plannedDate' in tx) {
+    back.date = tx.plannedDate || null;
+    // Volta à competência normal (a da data prevista, ou o período quando a data é a definir).
+    if (tx.recurrenceId) { back.monthManual = false; if (!back.date) back.month = tx.period || tx.month; }
+  }
   delete back.plannedAmount;
-  const ops = [{ store: 'transactions', put: back }];
+  delete back.plannedDate;
+  const ops = [{ store: 'transactions', put: normalizeTransaction(back) }];
   if (rest && rest.status === 'planned') ops.push({ store: 'transactions', del: rest.id });
   await apply(ops);
   return back;

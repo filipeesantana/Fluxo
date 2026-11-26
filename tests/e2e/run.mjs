@@ -68,6 +68,28 @@ async function openForm(page) {
   return page.locator('.entry-modal');
 }
 
+/**
+ * "Repetir" (3.1.1): Não repetir | Mensal | Personalizar.
+ * mode: fixed · days (dias fixos) · flex (datas a definir) · forecast (previsão de gasto).
+ */
+async function setRepeat(m, { preset = 'monthly', mode, perMonth, days, end, day } = {}) {
+  const box = m.locator('.repeat-box');
+  if (['weekly', 'biweekly', 'yearly'].includes(preset)) {
+    await m.locator('.repeat-seg [data-value="custom"]').click();
+    await box.locator(`[aria-label="Frequência"] [data-value="${preset}"]`).click();
+  } else await m.locator(`.repeat-seg [data-value="${preset}"]`).click();
+  if (mode === 'flex') {
+    await box.locator('input[name=repeatTimes]').fill(perMonth || '1');
+    await box.locator('[aria-label="Datas"] [data-value="tbd"]').click();
+  } else if (mode === 'days') {
+    await box.locator('input[name=repeatTimes]').fill(String(days.split(',').length));
+    await box.locator('[aria-label="Datas"] [data-value="day"]').click();
+    await box.locator('input[name=repeatDays]').fill(days);
+  } else if (mode === 'forecast') await box.locator('input[name=repeatForecast]').check();
+  if (day) await box.locator('input[name=repeatDay]').fill(String(day));
+  if (end) { await box.locator('.repeat-options summary').click(); await box.locator('input[name=repeatEnd]').fill(end); }
+}
+
 /** Seletor pesquisável: abre, digita e confirma com Enter. */
 async function pick(modal, name, label) {
   const page = modal.page();
@@ -89,6 +111,14 @@ async function createInline(modal, name, value, kind) {
   await input.press('Enter');
   if (name === 'source' || name === 'to') await page.locator(`.picker-pop .picker-kinds .chip[data-kind="${kind || 'checking'}"]`).click();
   await page.waitForFunction(([n, v]) => document.querySelector(`[data-picker="${n}"] .picker-value`)?.textContent === v, [name, value]);
+}
+
+/** Espera o diálogo terminar de abrir (o foco inicial vai para o primeiro campo um quadro depois). */
+async function settled(modal) {
+  await modal.waitFor();
+  const page = modal.page();
+  const sel = await modal.evaluate((el) => `.${[...el.classList].filter((c) => !c.startsWith('is-')).join('.')}`);
+  await page.waitForFunction((s) => Boolean(document.activeElement?.closest(s)), sel);
 }
 
 async function save(modal) {
@@ -626,6 +656,11 @@ async function run() {
     await page.locator('.tx-row', { hasText: /^.*Show$/ }).first();
     await page.locator('.tx-row').filter({ hasNotText: 'Reembolso' }).locator('.tx-more').click();
     await page.locator('.menu-item', { hasText: 'Duplicar' }).click();
+    // 3.1.1: Duplicar abre a cópia preenchida; nada é gravado antes de Salvar.
+    const dm = page.locator('.entry-modal');
+    await dm.waitFor();
+    eq(await dm.locator('input[name=description]').inputValue(), 'Show', 'cópia preenchida');
+    await save(dm);
     await expectKpi(page, 'Despesas realizadas', 'R$ 160,00');
     const dupRow = page.locator('.tx-row').filter({ hasNotText: 'Reembolso' }).first();
     await dupRow.locator('.status-btn').click();
@@ -1182,7 +1217,7 @@ async function run() {
     await m.locator('input[name=amount]').fill('100');
     await m.locator('input[name=description]').fill('Internet');
     await m.locator('input[name=date]').fill('2026-11-15');
-    await m.locator('select[name=repeat]').selectOption('monthly');
+    await setRepeat(m, { preset: 'monthly' });
     await save(m);
     const check = async () => api(page, async (repo) => {
       const { summarize } = await import('./js/services/finance.js');
@@ -1725,11 +1760,7 @@ async function run() {
     await m.locator('input[name=description]').fill(description);
     await m.locator('input[name=date]').fill(date);
     if (source) await pick(m, 'source', source);
-    await m.locator('select[name=repeat]').selectOption(preset);
-    if (mode) await m.locator(`.mode-opt[data-mode="${mode}"]`).click();
-    if (perMonth) await m.locator('input[name=repeatPerMonth]').fill(perMonth);
-    if (days) await m.locator('input[name=repeatDays]').fill(days);
-    if (end) { await m.locator('.repeat-options summary').click(); await m.locator('input[name=repeatEnd]').fill(end); }
+    await setRepeat(m, { preset, mode, perMonth, days, end });
     await save(m);
   }
 
@@ -1830,13 +1861,13 @@ async function run() {
   await test('3.1 — Cenário 5: transformar lançamento existente em recorrente mantém o registro único', async () => {
     const { context, page } = await newPage();
     await api(page, (repo) => repo.saveTransaction({ id: 'c1', type: 'expense', status: 'done', amount: 5000, date: '2026-11-04', description: 'Consulta' }));
-    await page.locator('.tx-row', { hasText: 'Consulta' }).locator('.tx-more').click();
-    await page.locator('.menu-item', { hasText: 'Transformar em recorrente' }).click();
-    const m = page.locator('.modal', { hasText: 'Transformar em recorrente' });
-    await m.locator('.mode-opt[data-mode="flex"]').click();
-    await m.locator('input[name=repeatPerMonth]').fill('2');
-    await m.getByRole('button', { name: 'Transformar' }).click();
-    await waitText(page, '.toast', /recorrente/);
+    // 3.1.1: pela edição do próprio lançamento (Repetir → Mensal → 2× · a definir → Salvar).
+    await page.locator('.tx-row', { hasText: 'Consulta' }).locator('.tx-main').click();
+    const m = page.locator('.entry-modal');
+    await m.waitFor();
+    await setRepeat(m, { preset: 'monthly', mode: 'flex', perMonth: '2' });
+    await save(m);
+    await waitText(page, '.toast', /se repete/);
     const r = await api(page, (repo) => ({ tx: repo.list('transactions').map((t) => [t.id, t.occurrenceKey, t.status]), rule: repo.list('recurrences').map((x) => [x.mode, x.perPeriod]) }));
     eq(JSON.stringify(r.tx), JSON.stringify([['c1', '2026-11#1', 'done']]), 'o original vira a 1ª ocorrência');
     eq(JSON.stringify(r.rule), JSON.stringify([['flex', 2]]), 'regra flexível');
@@ -1848,9 +1879,9 @@ async function run() {
   await test('3.1 — Cenário 6: replicar para três meses específicos (previstas, sem herdar o pago)', async () => {
     const { context, page } = await newPage();
     await api(page, (repo) => repo.saveTransaction({ id: 'r0', type: 'expense', status: 'done', amount: 12000, date: '2026-11-08', description: 'Manutenção' }));
-    await page.locator('.tx-row', { hasText: 'Manutenção' }).locator('.tx-more').click();
-    await page.locator('.menu-item', { hasText: 'Replicar para outros meses' }).click();
+    await page.locator('.tx-row', { hasText: 'Manutenção' }).locator('.tx-rep').click();
     const m = page.locator('.replicate-modal');
+    await m.locator('[data-when="pick"]').click();
     for (const mm of ['2027-01', '2027-03', '2027-05']) await m.locator(`.month-pick[data-month="${mm}"]`).click();
     await waitText(page, () => m.locator('.replicate-summary').textContent().then(norm), /3 lançamentos previstos serão criados/);
     await m.getByRole('button', { name: 'Replicar' }).dblclick();
@@ -2169,8 +2200,8 @@ async function run() {
     await page.locator('.tabbar .tab-add').click();
     const m = page.locator('.entry-modal');
     await m.waitFor();
-    await m.locator('select[name=repeat]').selectOption('monthly');
-    assert(await inView('.entry-modal .mode-opt[data-mode="flex"]'), 'opções de repetição legíveis');
+    await m.locator('.repeat-seg [data-value="monthly"]').click();
+    assert(await inView('.entry-modal .repeat-box input[name=repeatTimes]'), 'opções de repetição legíveis');
     assert(await inView('.entry-modal .modal-foot button[type=submit]'), 'botão salvar visível');
     for (const r of ['visao-geral', 'lancamentos', 'planejamento/compromissos', 'planejamento/calendario', 'investimentos', 'configuracoes']) {
       await page.keyboard.press('Escape');
@@ -2185,7 +2216,7 @@ async function run() {
   await test('3.1 — Cenário 22: assinatura institucional fixa, com a versão central, em todos os modos', async () => {
     const { context, page } = await newPage();
     const version = await page.evaluate(async () => (await import('./js/version.js')).APP_VERSION);
-    eq(version, '3.1.0', 'versão');
+    eq(version, '3.1.1', 'versão');
     await waitText(page, '.sidebar .signature', `Desenvolvido por Filipe Santana FS v${version}`);
     assert(await page.locator('.sidebar .signature .sig-by').isVisible(), 'visível no desktop');
     await page.getByRole('button', { name: 'Personalizar' }).click();
@@ -2215,6 +2246,386 @@ async function run() {
     for (const bad of [/git clone/i, /\bcommit/i, /Settings → Pages/i, /npm (run|test)/i, /branch/i]) assert(!bad.test(readme), `README não deveria ensinar publicação (${bad})`);
     const dev = await readFile(join(ROOT, 'docs', 'DEVELOPMENT.md'), 'utf8');
     assert(dev.includes('npm test'), 'informação técnica foi para docs/DEVELOPMENT.md');
+  });
+
+  // ——————————————————— Fluxo 3.1.1 — testes de aceitação pela interface ———————————————————
+  /** Troca de mês pela navegação e espera a tela do novo mês. */
+  const stepMonth = async (page, name) => {
+    const label = () => page.locator('.month-nav').first().textContent().then(norm);
+    const before = await label();
+    await page.getByRole('button', { name }).first().click();
+    await waitText(page, async () => String((await label()) !== before), 'true');
+  };
+  const nextMonth = (page) => stepMonth(page, 'Próximo mês');
+  const prevMonth = (page) => stepMonth(page, 'Mês anterior');
+  /** Linhas visíveis da lista de Lançamentos com a descrição dada (no mês aberto). */
+  const listRows = (page, desc) => page.locator('.tx-list .tx-row', { has: page.locator('.tx-desc', { hasText: new RegExp(`^${desc}`) }) });
+  const monthCount = (page, desc, months) => api(page, async (repo, { desc, months }) => {
+    const { monthItems } = await import('./js/services/finance.js');
+    const ctx = repo.context();
+    return months.map((m) => monthItems(ctx, m).filter((i) => i.description === desc).map((i) => `${i.status}:${i.date || 'tbd'}`).join(','));
+  }, { desc, months });
+  /** Contador de interações significativas (cliques) de uma jornada. */
+  const journey = () => { let n = 0; const tap = async (loc, opts) => { n++; await loc.click(opts); }; return { tap, get count() { return n; } }; };
+  const metrics = [];
+
+  await test('3.1.1 — Teste 1: despesa mensal (Internet R$ 100 via Pix) em Mensal → Salvar; aparece prevista nos 3 meses seguintes, sem cartão', async () => {
+    const { context, page } = await newPage();
+    await api(page, (repo) => repo.createNamed('accounts', { name: 'Conta Pix', kind: 'checking' }));
+    const j = journey();
+    await j.tap(page.locator('.sidebar [data-action="new-entry"]'));
+    const m = page.locator('.entry-modal');
+    await m.waitFor();
+    await m.locator('input[name=amount]').fill('100');
+    await m.locator('input[name=description]').fill('Internet');
+    await m.locator('input[name=date]').fill('2026-11-10');
+    await pick(m, 'source', 'Conta Pix');
+    await m.locator('select[name=method]').selectOption('pix', { force: true }).catch(() => {});
+    await j.tap(m.locator('.repeat-seg [data-value="monthly"]'));
+    assert(/Mensal, dia 10/.test(norm(await m.locator('.repeat-summary').textContent())), 'Mensal já configurado no dia da data, sem término');
+    await j.tap(m.locator('.modal-foot button[type=submit]'));
+    await m.waitFor({ state: 'detached' });
+    eq(j.count, 3, 'abrir + Mensal + Salvar');
+    metrics.push('Despesa mensal nova: 3 cliques (abrir, Mensal, Salvar)');
+    await page.goto(`${base}#/lancamentos`);
+    for (const mm of ['Dezembro de 2026', 'Janeiro de 2027', 'Fevereiro de 2027']) {
+      await nextMonth(page);
+      await waitText(page, '.month-nav .month-label, .month-nav', new RegExp(mm));
+      eq(await listRows(page, 'Internet').count(), 1, `uma Internet em ${mm}`);
+      assert(/previsto/.test(norm(await listRows(page, 'Internet').first().textContent())), `prevista em ${mm}`);
+    }
+    eq(JSON.stringify(await monthCount(page, 'Internet', ['2026-12', '2027-01', '2027-02'])), JSON.stringify(['planned:2026-12-10', 'planned:2027-01-10', 'planned:2027-02-10']), 'uma ocorrência prevista por mês');
+    eq(await api(page, (repo) => repo.list('accounts').some((a) => a.kind === 'credit')), false, 'nenhum cartão foi necessário');
+    await noErrors(page);
+    await context.close();
+  });
+
+  await test('3.1.1 — Teste 2: Replicar (botão da linha) → Próximos 3 meses → Replicar; original único e pago não copiado', async () => {
+    const { context, page } = await newPage();
+    await api(page, (repo) => repo.saveTransaction({ id: 'acad', type: 'expense', status: 'done', amount: 5000, date: '2026-11-20', description: 'Academia' }));
+    await page.goto(`${base}#/lancamentos`);
+    const j = journey();
+    await j.tap(listRows(page, 'Academia').locator('.tx-rep'));
+    const m = page.locator('.replicate-modal');
+    await j.tap(m.locator('[data-when="3"]'));
+    await waitText(page, () => m.locator('.replicate-summary').textContent().then(norm), /^3 lançamentos previstos serão criados/);
+    await j.tap(m.getByRole('button', { name: 'Replicar' }));
+    await m.waitFor({ state: 'detached' });
+    eq(j.count, 3, 'Replicar + Próximos 3 + Replicar');
+    metrics.push('Replicar para 3 meses: 3 cliques (antes: passar o mouse para revelar ⋯, ⋯, Replicar…, Próximos 3, Replicar = 4)');
+    const rows = await api(page, (repo) => repo.list('transactions').map((t) => [t.id === 'acad' ? 'original' : 'copia', t.date, t.status]).sort((a, b) => a[1].localeCompare(b[1])));
+    eq(JSON.stringify(rows), JSON.stringify([['original', '2026-11-20', 'done'], ['copia', '2026-12-20', 'planned'], ['copia', '2027-01-20', 'planned'], ['copia', '2027-02-20', 'planned']]), 'três cópias previstas e o original intacto');
+    // Próximo mês com o padrão já escolhido: Replicar → Replicar.
+    await page.locator('.toast .link-btn', { hasText: 'Desfazer' }).last().click();
+    await waitText(page, async () => String(await api(page, (repo) => repo.list('transactions').length)), '1');
+    await listRows(page, 'Academia').locator('.tx-rep').click();
+    await m.getByRole('button', { name: 'Replicar' }).click();
+    await m.waitFor({ state: 'detached' });
+    eq(JSON.stringify(await monthCount(page, 'Academia', ['2026-12', '2027-01'])), JSON.stringify(['planned:2026-12-20', '']), 'Próximo mês em 2 cliques');
+    await noErrors(page);
+    await context.close();
+  });
+
+  await test('3.1.1 — Teste 2b: Replicar → Todos os meses vira série contínua sem duplicar o original (também por "Repetir" na edição)', async () => {
+    const { context, page } = await newPage();
+    await api(page, async (repo) => {
+      const vr = await repo.createNamed('accounts', { name: 'VR', kind: 'benefit' });
+      await repo.saveTransaction({ id: 'net', type: 'expense', status: 'done', amount: 9990, date: '2026-11-05', description: 'Streaming' });
+      await repo.saveTransaction({ id: 'alm', type: 'expense', status: 'planned', amount: 3000, date: '2026-11-28', description: 'Almoço', sourceId: vr.id });
+    });
+    await page.goto(`${base}#/lancamentos`);
+    const j = journey();
+    await j.tap(listRows(page, 'Streaming').locator('.tx-rep'));
+    const m = page.locator('.replicate-modal');
+    await j.tap(m.locator('[data-when="all"]'));
+    await waitText(page, () => m.locator('.replicate-summary').textContent().then(norm), /Repete todo mês no dia 5, a partir de novembro de 2026, sem data de término/);
+    await j.tap(m.getByRole('button', { name: 'Repetir todo mês' }));
+    await m.waitFor({ state: 'detached' });
+    eq(j.count, 3, 'Replicar + Todos os meses + Confirmar');
+    metrics.push('Transformar em mensal pela linha: 3 cliques (antes: ⋯ escondido, Transformar em recorrente…, Transformar = 3, com o botão invisível até passar o mouse)');
+    eq(JSON.stringify(await monthCount(page, 'Streaming', ['2026-11', '2026-12', '2027-06'])), JSON.stringify(['done:2026-11-05', 'planned:2026-12-05', 'planned:2027-06-05']), 'original é a 1ª ocorrência; meses seguintes previstos');
+    eq(await api(page, (repo) => repo.list('transactions').filter((t) => t.description === 'Streaming').length), 1, 'nenhuma cópia gravada');
+    // Pela edição: clicar no lançamento → Mensal → Salvar.
+    const k = journey();
+    await k.tap(listRows(page, 'Almoço').locator('.tx-main'));
+    const e = page.locator('.entry-modal');
+    await settled(e);
+    await k.tap(e.locator('.repeat-seg [data-value="monthly"]'));
+    await k.tap(e.locator('.modal-foot button[type=submit]'));
+    await e.waitFor({ state: 'detached' });
+    eq(k.count, 3, 'lançamento + Mensal + Salvar');
+    eq(JSON.stringify(await monthCount(page, 'Almoço', ['2026-11', '2026-12'])), JSON.stringify(['planned:2026-11-28', 'planned:2026-12-28']), 'benefício (VR) também se repete');
+    eq(await api(page, (repo) => repo.list('transactions').filter((t) => t.description === 'Almoço').length), 1, 'sem segunda movimentação');
+    await noErrors(page);
+    await context.close();
+  });
+
+  await test('3.1.1 — Testes 3, 4 e 8: psicóloga 2× R$ 50 com datas a definir; datas por mês, pagamento individual, valor diferente e alteração sem duplicar', async () => {
+    const { context, page } = await newPage();
+    const m = await openForm(page);
+    await m.locator('input[name=amount]').fill('50');
+    await m.locator('input[name=description]').fill('Psicóloga');
+    await setRepeat(m, { preset: 'monthly', mode: 'flex', perMonth: '2' });
+    await m.locator('input[name=dateTBD]').check();
+    assert(/2× por mês, datas flexíveis · R\$ 50,00 cada · R\$ 100,00 por mês/.test(norm(await m.locator('.repeat-summary').textContent())), 'resumo com R$ 100 no mês');
+    await save(m);
+    eq(JSON.stringify(await monthCount(page, 'Psicóloga', ['2026-11', '2026-12', '2027-01'])), JSON.stringify(['planned:tbd,planned:tbd', 'planned:tbd,planned:tbd', 'planned:tbd,planned:tbd']), 'nenhuma data inventada');
+    for (const mm of ['2026-11', '2026-12', '2027-01']) eq((await sumOf(page, mm)).total, 10000, `previsão de R$ 100 em ${mm}`);
+    await page.goto(`${base}#/planejamento/compromissos`);
+    const card = page.locator('.commit', { hasText: 'Psicóloga' });
+    const setDate = async (i, v) => { const inp = card.locator('.occ-row').nth(i).locator('input.occ-date'); await inp.fill(v); await inp.dispatchEvent('change'); };
+    await setDate(0, '2026-11-04');
+    await waitText(page, async () => String(await card.locator('.occ-row').nth(0).locator('input.occ-date').inputValue()), '2026-11-04');
+    await setDate(1, '2026-11-18');
+    await waitText(page, async () => (await monthCount(page, 'Psicóloga', ['2026-11']))[0], 'planned:2026-11-04,planned:2026-11-18');
+    await nextMonth(page);
+    await setDate(0, '2026-12-07');
+    await waitText(page, async () => (await monthCount(page, 'Psicóloga', ['2026-12']))[0], /planned:2026-12-07/);
+    await setDate(1, '2026-12-21');
+    await waitText(page, async () => (await monthCount(page, 'Psicóloga', ['2026-12']))[0], 'planned:2026-12-07,planned:2026-12-21');
+    await nextMonth(page);
+    await waitText(page, () => page.locator('.month-nav').first().textContent().then(norm), /Janeiro de 2027/);
+    eq(await card.locator('.pill', { hasText: 'Data a definir' }).count(), 2, 'janeiro com duas datas a definir');
+    eq((await sumOf(page, '2027-01')).total, 10000, 'janeiro conta R$ 100');
+    // Teste 4: concluir uma a uma em novembro (1 clique cada).
+    await prevMonth(page); await prevMonth(page);
+    await card.locator('.occ-row').nth(0).locator('.occ-check').click();
+    await waitText(page, async () => JSON.stringify(await sumOf(page, '2026-11')), JSON.stringify({ done: 5000, pending: 5000, total: 10000, left: 0 }));
+    await waitText(page, () => card.locator('.commit-progress').textContent().then(norm), /^1 de 2 pagas/);
+    await card.locator('.occ-row').nth(1).locator('.occ-check').click();
+    await waitText(page, async () => JSON.stringify(await sumOf(page, '2026-11')), JSON.stringify({ done: 10000, pending: 0, total: 10000, left: 0 }));
+    await page.locator('.commit-done summary').click();
+    assert(await page.locator('.commit-done .commit.is-done', { hasText: 'Psicóloga' }).count() === 1, 'compromisso concluído (recolhido em Concluídos)');
+    eq(JSON.stringify(await sumOf(page, '2026-12')), JSON.stringify({ done: 0, pending: 10000, total: 10000, left: 0 }), 'dezembro continua pendente');
+    await page.goto(`${base}#/`);
+    await expectKpi(page, 'Despesas realizadas', 'R$ 100,00');
+    // 4.2: consulta de dezembro paga por R$ 60 — sem sobrar previsão de R$ 50.
+    await page.goto(`${base}#/planejamento/compromissos`);
+    await nextMonth(page);
+    await card.locator('.occ-row').nth(0).locator('button[aria-haspopup="menu"]').click();
+    await page.locator('.menu-item', { hasText: 'Confirmar pagamento…' }).click();
+    const d = page.locator('.pay-modal');
+    await settled(d);
+    await d.locator('input[name=payAmount]').fill('60');
+    await d.getByRole('button', { name: 'Confirmar pagamento' }).click();
+    await waitText(page, async () => JSON.stringify(await sumOf(page, '2026-12')), JSON.stringify({ done: 6000, pending: 5000, total: 11000, left: 0 }));
+    // Teste 8: alterar a data da 2ª consulta de dezembro (21 → 22) pelo menu.
+    await card.locator('.occ-row').nth(1).locator('button[aria-haspopup="menu"]').click();
+    await page.locator('.menu-item', { hasText: 'Alterar data…' }).click();
+    const dd = page.locator('.occ-date-modal');
+    await settled(dd);
+    await dd.locator('input[name=occDate]').fill('2026-12-22');
+    await dd.getByRole('button', { name: 'Salvar data' }).click();
+    // Paga hoje (25/11) por R$ 60, a consulta continua no compromisso de dezembro.
+    await waitText(page, async () => (await monthCount(page, 'Psicóloga', ['2026-12']))[0], 'done:2026-11-25,planned:2026-12-22');
+    eq(JSON.stringify(await monthCount(page, 'Psicóloga', ['2026-11', '2027-01'])), JSON.stringify(['done:2026-11-04,done:2026-11-18', 'planned:tbd,planned:tbd']), 'outros meses intactos');
+    // Ocorrência extra (terceira consulta) só em dezembro.
+    await card.getByRole('button', { name: 'Adicionar ocorrência' }).click();
+    const x = page.locator('.extra-modal');
+    await settled(x);
+    await x.locator('input[name=extraDate]').fill('2026-12-28');
+    await x.getByRole('button', { name: 'Adicionar' }).dblclick();
+    await x.waitFor({ state: 'detached' });
+    await waitText(page, async () => (await monthCount(page, 'Psicóloga', ['2026-12']))[0], 'done:2026-11-25,planned:2026-12-22,planned:2026-12-28');
+    eq((await sumOf(page, '2027-01')).total, 10000, 'extra não altera janeiro');
+    eq((await sumOf(page, '2026-11')).total, 10000, 'novembro não recebe a consulta de dezembro paga antes');
+    // Desfazer o pagamento antecipado devolve a data e o valor previstos.
+    await card.locator('.occ-row', { hasText: '25 nov' }).locator('.occ-check').click();
+    await waitText(page, async () => (await monthCount(page, 'Psicóloga', ['2026-12']))[0], 'planned:2026-12-07,planned:2026-12-22,planned:2026-12-28');
+    eq((await sumOf(page, '2026-12')).total, 15000, 'três consultas previstas de R$ 50');
+    const integrity = await api(page, async (repo) => (await import('./js/services/integrity.js')).auditData(repo.snapshot()).filter((i) => i.severity !== 'info').map((i) => i.message));
+    eq(JSON.stringify(integrity), '[]', 'nenhum aviso de integridade');
+    await noErrors(page);
+    await context.close();
+  });
+
+  await test('3.1.1 — Teste 6: mensal de janeiro a junho (início e término pelo formulário) — nada antes nem depois', async () => {
+    const { context, page } = await newPage();
+    const m = await openForm(page);
+    await m.locator('input[name=amount]').fill('80');
+    await m.locator('input[name=description]').fill('Curso');
+    await m.locator('input[name=date]').fill('2027-01-15');
+    await setRepeat(m, { preset: 'monthly', end: '2027-06-30' });
+    await save(m);
+    const months = ['2026-12', '2027-01', '2027-02', '2027-03', '2027-04', '2027-05', '2027-06', '2027-07', '2027-08'];
+    eq(JSON.stringify((await monthCount(page, 'Curso', months)).map((x) => x.split(',').filter(Boolean).length)), JSON.stringify([0, 1, 1, 1, 1, 1, 1, 0, 0]), 'só de janeiro a junho');
+    await noErrors(page);
+    await context.close();
+  });
+
+  await test('3.1.1 — Teste 7: Repetir mensal funciona com Pix, dinheiro, débito, crédito, conta digital, benefício e sem fonte', async () => {
+    const { context, page } = await newPage();
+    await api(page, async (repo) => {
+      await repo.createNamed('accounts', { name: 'Banco', kind: 'checking' });
+      await repo.createNamed('accounts', { name: 'Carteira', kind: 'cash' });
+      await repo.createNamed('accounts', { name: 'Nubank', kind: 'credit', closingDay: 3, dueDay: 10 });
+      await repo.createNamed('accounts', { name: 'Conta digital', kind: 'checking' });
+      await repo.createNamed('accounts', { name: 'VA', kind: 'benefit' });
+    });
+    const cases = [['Pix', 'Banco'], ['Dinheiro', 'Carteira'], ['Débito', 'Banco'], ['Crédito', 'Nubank'], ['Digital', 'Conta digital'], ['Mercado VA', 'VA'], ['Sem fonte', null]];
+    for (const [i, [desc, src]] of cases.entries()) {
+      const m = await openForm(page);
+      await m.locator('input[name=amount]').fill(String(20 + i));
+      await m.locator('input[name=description]').fill(desc);
+      await m.locator('input[name=date]').fill('2026-11-15');
+      if (src) await pick(m, 'source', src);
+      await setRepeat(m, { preset: 'monthly' });
+      await save(m);
+    }
+    const r = await api(page, async (repo) => {
+      const { monthItems } = await import('./js/services/finance.js');
+      const ctx = repo.context();
+      const per = (m) => Object.fromEntries(['Pix', 'Dinheiro', 'Débito', 'Crédito', 'Digital', 'Mercado VA', 'Sem fonte'].map((d) => [d, monthItems(ctx, m).filter((i) => i.description === d).length]));
+      return { rules: repo.list('recurrences').length, jan: per('2027-01'), mar: per('2027-03') };
+    });
+    eq(r.rules, 7, 'uma série por fonte');
+    eq(JSON.stringify(Object.values(r.jan)), '[1,1,1,1,1,1,1]', 'uma ocorrência em janeiro para cada fonte (cartão na competência da fatura)');
+    eq(JSON.stringify(Object.values(r.mar)), '[1,1,1,1,1,1,1]', 'uma ocorrência em março para cada fonte');
+    await noErrors(page);
+    await context.close();
+  });
+
+  await test('3.1.1 — Testes 9 e 10: persistência ao fechar e reabrir o navegador; cliques repetidos, Enter, recargas e navegação não duplicam', async () => {
+    const dir = join(ARTIFACTS, `profile-${Date.now()}`);
+    const open = async () => {
+      const ctx = await chromium.launchPersistentContext(dir, { viewport: { width: 1360, height: 900 }, locale: 'pt-BR', timezoneId: 'America/Sao_Paulo' });
+      await ctx.clock.setFixedTime(NOW);
+      const page = ctx.pages()[0] || await ctx.newPage();
+      page.errors = [];
+      page.on('pageerror', (e) => page.errors.push(`pageerror: ${e.message}`));
+      await page.goto(base);
+      await page.waitForSelector('.page-head');
+      return { ctx, page };
+    };
+    let { ctx, page } = await open();
+    // Salvar com clique duplo e Ctrl+Enter repetido.
+    const m = await openForm(page);
+    await m.locator('input[name=amount]').fill('100');
+    await m.locator('input[name=description]').fill('Aluguel');
+    await m.locator('input[name=date]').fill('2026-11-10');
+    await setRepeat(m, { preset: 'monthly' });
+    await m.locator('.modal-foot button[type=submit]').dblclick();
+    await m.waitFor({ state: 'detached' });
+    const m2 = await openForm(page);
+    await m2.locator('input[name=amount]').fill('35');
+    await m2.locator('input[name=description]').fill('Farmácia');
+    await m2.locator('input[name=date]').fill('2026-11-12');
+    await m2.locator('input[name=amount]').focus();
+    for (let i = 0; i < 4; i++) await page.keyboard.press('Control+Enter');
+    await m2.waitFor({ state: 'detached' });
+    await page.goto(`${base}#/lancamentos`);
+    await listRows(page, 'Farmácia').locator('.tx-rep').click();
+    const rm = page.locator('.replicate-modal');
+    await rm.locator('[data-when="3"]').click();
+    await rm.getByRole('button', { name: 'Replicar' }).dblclick();
+    await rm.waitFor({ state: 'detached' });
+    // Paga a ocorrência de novembro do aluguel.
+    await listRows(page, 'Aluguel').locator('.status-btn').click();
+    await waitText(page, async () => (await monthCount(page, 'Aluguel', ['2026-11']))[0], 'done:2026-11-10');
+    const snap = async (p) => api(p, async (repo) => {
+      const { monthItems } = await import('./js/services/finance.js');
+      const ctx = repo.context();
+      return JSON.stringify({ tx: repo.list('transactions').map((t) => `${t.description}|${t.date}|${t.status}|${t.amount}`).sort(), rules: repo.list('recurrences').length,
+        months: ['2026-11', '2026-12', '2027-01', '2027-02', '2027-03'].map((mm) => monthItems(ctx, mm).map((i) => `${i.description}:${i.status}`).sort().join(',')) });
+    });
+    const before = await snap(page);
+    const parsed = JSON.parse(before);
+    eq(parsed.rules, 1, 'uma série apesar do clique duplo');
+    eq(parsed.tx.filter((t) => t.startsWith('Farmácia')).length, 4, 'Farmácia: original + 3 cópias (Enter ×4 e clique duplo não duplicam)');
+    eq(parsed.tx.filter((t) => t.startsWith('Aluguel')).length, 1, 'aluguel pago é a única ocorrência gravada');
+    for (let i = 0; i < 3; i++) { await page.reload(); await page.waitForSelector('.page-head'); }
+    for (let i = 0; i < 6; i++) await nextMonth(page);
+    for (let i = 0; i < 6; i++) await prevMonth(page);
+    eq(await snap(page), before, 'recargas e navegação entre meses não materializam nada');
+    await ctx.close();
+    ({ ctx, page } = await open());
+    eq(await snap(page), before, 'tudo preservado após fechar e reabrir o navegador');
+    eq(page.errors.length, 0, page.errors.join(' | '));
+    await ctx.close();
+  });
+
+  await test('3.1.1 — Teste 11: backup com série convertida, cópias, ocorrência extra, pagamento com outro valor e personalização restaura igual numa base vazia', async () => {
+    const a = await newPage();
+    await api(a.page, async (repo) => {
+      await repo.saveTransaction({ id: 'o1', type: 'expense', status: 'done', amount: 7000, date: '2026-11-03', description: 'Plano' });
+      const r = await repo.convertToRecurring('o1', { frequency: 'monthly', mode: 'fixed' });
+      await repo.saveTransaction({ id: 'o2', type: 'expense', status: 'done', amount: 2500, date: '2026-11-06', description: 'Pet' });
+      await repo.replicateTransaction('o2', { months: ['2026-12', '2027-01'], dateMode: 'flex', opId: 'op1' });
+      const psi = await repo.createRecurrence({ id: 'psi', type: 'expense', description: 'Psicóloga', amount: 5000, frequency: 'monthly', mode: 'flex', perPeriod: 2, startDate: '2026-11-01' });
+      await repo.addExtraOccurrence(psi.id, '2026-11', { date: '2026-11-27', opId: 'x1' });
+      const v = (await import('./js/services/finance.js')).virtualItems(repo.context(), '2026-12').find((x) => x.recurrenceId === r.id);
+      await repo.payItem(v, { date: '2026-12-04', amount: 7500 });
+      await repo.setUiLayout({ version: 1, sections: { overview: { items: [{ type: 'commitments', size: 'l', chart: 'list' }], known: ['commitments'] } } });
+    });
+    await a.page.goto(`${base}#/configuracoes/dados`);
+    const dl = await exportBackupUI(a.page);
+    const file = join(ARTIFACTS, 'backup-v311.json');
+    await dl.saveAs(file);
+    const pickSnap = (p) => api(p, (repo) => { const s = repo.snapshot(); s.meta = s.meta.filter((m) => m.key === 'ui.layout' || m.key === 'prefs'); return JSON.stringify(Object.fromEntries(Object.entries(s).map(([k, v]) => [k, v.map(({ rev, ...x }) => x).sort((p2, q) => String(p2.id || p2.key).localeCompare(String(q.id || q.key)))]))); });
+    const snapA = await pickSnap(a.page);
+    const sumsA = await sumOf(a.page, '2026-12');
+    await a.context.close();
+    const b = await newPage();
+    await b.page.goto(`${base}#/configuracoes/dados`);
+    const [ch] = await Promise.all([b.page.waitForEvent('filechooser'), b.page.getByRole('button', { name: 'Restaurar backup' }).click()]);
+    await ch.setFiles(file);
+    await b.page.getByRole('button', { name: 'Restaurar', exact: true }).click();
+    await waitText(b.page, '.toast', /Backup restaurado/);
+    eq(await pickSnap(b.page), snapA, 'dados e personalização equivalentes');
+    eq(JSON.stringify(await sumOf(b.page, '2026-12')), JSON.stringify(sumsA), 'mesmos totais após restaurar');
+    await noErrors(b.page);
+    await b.context.close();
+  });
+
+  await test('3.1.1 — Teste 12: jornadas do dia a dia pela interface (almoço, salário, pagar, consultar categoria do mês, editar, excluir)', async () => {
+    const { context, page } = await newPage();
+    await api(page, async (repo) => {
+      await repo.createNamed('accounts', { name: 'Banco', kind: 'checking' });
+      await repo.createNamed('categories', { name: 'Alimentação', type: 'expense' });
+    });
+    // Almoço: abrir, valor, descrição, categoria, Salvar.
+    let m = await openForm(page);
+    await m.locator('input[name=amount]').fill('32,50');
+    await m.locator('input[name=description]').fill('Almoço');
+    await pick(m, 'category', 'Alimentação');
+    await save(m);
+    // Salário mensal.
+    m = await openForm(page);
+    await m.locator('.segmented [data-value="income"]').first().click();
+    await m.locator('input[name=amount]').fill('5000');
+    await m.locator('input[name=description]').fill('Salário');
+    await m.locator('input[name=date]').fill('2026-12-05');
+    await setRepeat(m, { preset: 'monthly' });
+    await save(m);
+    // Consultar a categoria em novembro: 1 clique na barra leva aos lançamentos filtrados do mesmo mês.
+    await page.goto(`${base}#/`);
+    const bar = page.locator('.panel', { has: page.locator('h2', { hasText: 'Por categoria' }) }).locator('.bar-row', { hasText: 'Alimentação' });
+    await bar.click();
+    const drawer = page.locator('.modal', { hasText: 'Alimentação · Novembro de 2026' });
+    await drawer.waitFor();
+    eq(await drawer.locator('.tx-row').count(), 1, 'só os lançamentos da categoria, no mesmo mês, em 1 clique');
+    // "Abrir em Lançamentos" leva a lista já filtrada pela categoria e pelo mês.
+    await drawer.getByRole('button', { name: 'Abrir em Lançamentos' }).click();
+    await drawer.waitFor({ state: 'detached' });
+    await page.waitForSelector('#main .tx-list .tx-row');
+    assert(/Novembro de 2026/.test(norm(await page.locator('.month-nav').first().textContent())), 'mesmo mês');
+    eq(await page.locator('#main .tx-list .tx-row').count(), 1, 'lista filtrada pela categoria');
+    // Editar valor rapidamente e excluir com desfazer.
+    await page.goto(`${base}#/lancamentos`);
+    await listRows(page, 'Almoço').locator('.tx-main').click();
+    m = page.locator('.entry-modal');
+    await settled(m);
+    await m.locator('input[name=amount]').fill('35');
+    await save(m);
+    eq(await api(page, (repo) => repo.list('transactions').find((t) => t.description === 'Almoço').amount), 3500, 'edição persistida');
+    await listRows(page, 'Almoço').locator('.tx-more').click();
+    await page.locator('.menu-item', { hasText: 'Excluir' }).click();
+    await waitText(page, async () => String(await listRows(page, 'Almoço').count()), '0');
+    await page.locator('.toast .link-btn', { hasText: 'Desfazer' }).last().click();
+    await waitText(page, async () => String(await listRows(page, 'Almoço').count()), '1');
+    for (const line of metrics) console.log(`      ${line}`);
+    await noErrors(page);
+    await context.close();
   });
 
   await browser.close();

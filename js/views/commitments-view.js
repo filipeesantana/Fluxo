@@ -8,7 +8,7 @@ import { openEntryForm } from '../components/entry-form.js';
 import { toast, toastError } from '../components/toast.js';
 import { ui } from '../state.js';
 import { panel, txRow, categoryName, accountName, capitalize, emptyState } from './common.js';
-import { openItem, itemMenu, toggleStatus, openRecurrenceForm, closeForecast } from './actions.js';
+import { openItem, itemMenu, toggleStatus, openRecurrenceForm, closeForecast, openExtraOccurrence, editSeries } from './actions.js';
 
 const PILL = { done: 'pill-done', partial: 'pill-today', overdue: 'pill-overdue', pending: 'pill-today', planned: 'pill-planned', tbd: 'pill-planned', skipped: 'pill-muted', cancelled: 'pill-muted' };
 
@@ -59,7 +59,8 @@ function occurrenceRow(c, e) {
 
 function commitmentCard(c) {
   const r = c.rule;
-  const word = r.type === 'income' ? (c.doneCount === 1 ? 'recebida' : 'recebidas') : (c.doneCount === 1 ? 'paga' : 'pagas');
+  // "1 de 2 pagas": a concordância segue o total ("de 2 pagas"), como na fala.
+  const word = r.type === 'income' ? (c.count === 1 ? 'recebida' : 'recebidas') : (c.count === 1 ? 'paga' : 'pagas');
   const doneAll = c.state === 'done';
   const meta = [c.describe, r.categoryId ? categoryName(r.categoryId) : null, r.sourceId ? accountName(r.sourceId) : null].filter(Boolean).join(' · ');
   return h('article', { class: `commit${doneAll ? ' is-done' : ''}`, dataset: { rule: r.id } },
@@ -69,7 +70,10 @@ function commitmentCard(c) {
       h('div', { class: 'right' }, h('div', { class: 'num strong' }, `${formatMoney(c.paid)} de ${formatMoney(c.total)}`), h('div', { class: 'faint small' }, doneAll ? (r.type === 'income' ? 'tudo recebido' : 'concluído') : `restam ${formatMoney(c.left)}`))),
     progress(c.ratio, { tone: doneAll ? 'ok' : c.state === 'overdue' ? 'warn' : undefined, small: true, label: `${r.description}: ${c.doneCount} de ${c.count} ${word}` }),
     h('p', { class: 'commit-progress small' }, `${c.doneCount} de ${c.count} ${word}`, c.count > 1 && !doneAll ? ` · ${formatPercent(c.ratio * 100, 0)} do valor` : ''),
-    h('div', { class: 'occ-list', role: 'list' }, ...c.entries.map((e) => occurrenceRow(c, e))));
+    h('div', { class: 'occ-list', role: 'list' }, ...c.entries.map((e) => occurrenceRow(c, e))),
+    h('div', { class: 'commit-foot' },
+      h('button', { class: 'link-btn small', type: 'button', onclick: () => openExtraOccurrence(r, c.month) }, icon('plus', 'icon-sm'), 'Adicionar ocorrência'),
+      h('button', { class: 'link-btn small', type: 'button', onclick: () => editSeries(r, firstDay(c.month)) }, 'Editar série')));
 }
 
 function forecastCard(c) {
@@ -109,12 +113,15 @@ export function renderCommitments(container) {
       h('button', { class: 'btn btn-primary', type: 'button', onclick: () => openRecurrenceForm() }, icon('plus', 'icon-sm'), 'Nova recorrência'))));
     return;
   }
-  const summary = h('div', { class: 'commit-summary' },
-    h('div', { class: 'cal-stat' }, h('b', { class: 'num' }, formatMoney(t.total)), h('span', null, 'previsto em contas do mês')),
-    h('div', { class: 'cal-stat' }, h('b', { class: 'num pos' }, formatMoney(t.paid)), h('span', null, 'já pago')),
-    h('div', { class: 'cal-stat' }, h('b', { class: `num ${t.left ? 'warn' : ''}` }, formatMoney(t.left)), h('span', null, 'restante')),
-    h('div', { class: 'cal-stat' }, h('b', { class: 'num' }, `${t.doneCount} de ${t.count}`), h('span', null, 'ocorrências concluídas')),
-    res.forecasts.length ? h('div', { class: 'cal-stat' }, h('b', { class: 'num' }, `${formatMoney(t.forecastUsed)} de ${formatMoney(t.forecastPlanned)}`), h('span', null, 'usado nas previsões')) : null);
+  // Resumo com hierarquia: quanto falta em destaque; o resto em uma linha de apoio.
+  const summary = h('div', { class: 'commit-sum' },
+    h('div', { class: 'commit-sum-main' },
+      h('span', { class: 'faint small' }, 'Falta pagar'),
+      h('strong', { class: `num commit-sum-value ${t.left ? 'warn' : 'pos'}` }, formatMoney(t.left))),
+    h('div', { class: 'commit-sum-side grow' },
+      progress(t.total > 0 ? t.paid / t.total : 0, { tone: t.left ? undefined : 'ok', small: true, label: `${formatMoney(t.paid)} de ${formatMoney(t.total)} pagos` }),
+      h('p', { class: 'small muted' }, h('strong', { class: 'num' }, formatMoney(t.paid)), ` de ${formatMoney(t.total)} pagos · ${t.doneCount} de ${t.count} ${t.count === 1 ? 'ocorrência concluída' : 'ocorrências concluídas'}`),
+      res.forecasts.length ? h('p', { class: 'small faint' }, `Previsões: ${formatMoney(t.forecastUsed)} de ${formatMoney(t.forecastPlanned)} usados`) : null));
   const blocks = [panel(`Compromissos de ${formatMonth(m)}`, { hint: 'cada mês tem seu próprio estado' }, summary)];
   if (open.length) blocks.push(h('div', { class: 'commit-grid' }, ...open.map(commitmentCard)));
   if (res.forecasts.length) blocks.push(h('section', { class: 'stack' }, h('h2', { class: 'section-title' }, 'Previsões do mês'), h('div', { class: 'commit-grid' }, ...res.forecasts.map(forecastCard))));

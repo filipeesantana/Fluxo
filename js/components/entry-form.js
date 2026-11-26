@@ -11,11 +11,11 @@ import { descriptionSuggestions, recentSources, fold } from '../services/suggest
 import { summarize } from '../services/finance.js';
 import { findSimilar } from '../services/integrity.js';
 import { METHODS } from '../services/validation.js';
-import { ruleMode, monthlyAmount } from '../services/recurrence.js';
+import { ruleMode, monthlyAmount, describeFrequency } from '../services/recurrence.js';
 import { repeatFields } from './repeat-fields.js';
 import { categoryOptions, blockOptions, accountOptions, createCategory, createBlock, categoryName, blockName, accountName, recentIds, colorOf } from '../views/common.js';
 import { ui } from '../state.js';
-import { askScope } from '../views/actions.js';
+import { askScope, editSeries } from '../views/actions.js';
 
 const SOURCE_KINDS = [{ value: 'checking', label: 'Conta' }, { value: 'credit', label: 'Cartão de crédito' }, { value: 'cash', label: 'Dinheiro' }, { value: 'benefit', label: 'Benefício (VA/VR)' }];
 
@@ -44,6 +44,9 @@ export function openEntryForm(opts = {}) {
   if (!existing && !occ && opts.defaults?.status == null && base.date > today()) base.status = 'planned';
   const isEdit = Boolean(existing || occ);
   const isRefund = base.type === 'refund';
+  // Um lançamento avulso já salvo também pode passar a se repetir (vira a 1ª ocorrência, sem cópia).
+  const canRepeatExisting = Boolean(existing) && !existing.recurrenceId && !existing.forecastId && !existing.planId && !existing.remainderOf && (existing.type === 'expense' || existing.type === 'income');
+  const seriesRule = (existing?.recurrenceId || occ?.ruleId) ? repo.get('recurrences', existing?.recurrenceId || occ?.ruleId) : null;
   const draftId = existing?.id || uid(); // idempotência: o mesmo formulário nunca cria dois registros
   let type = base.type;
   let statusTouched = isEdit || opts.defaults?.status != null;
@@ -110,9 +113,9 @@ export function openEntryForm(opts = {}) {
   const parcelCount = h('input', { class: 'input', type: 'number', min: 2, max: 120, step: 1, value: 2, inputmode: 'numeric' });
   const parcelFirst = h('input', { class: 'input', type: 'month', value: monthOf(base.date) });
   const parcelPreview = h('div', { class: 'faint small' });
-  // Repetição: um único seletor visível; o restante aparece só quando necessário.
-  const rep = repeatFields({ preset: opts.defaults?.repeat || 'none', mode: opts.defaults?.repeatMode || 'fixed', getDate: () => date.value, getAmount: () => amount.getValue(), getType: () => type, onChange: () => { mode.repeat = rep.active; if (mode.repeat) mode.parcel = false; syncExtras(); } });
-  const repeatSel = rep.select;
+  // Repetição: "Não repetir | Mensal | Personalizar"; o restante aparece só quando necessário.
+  const rep = repeatFields({ preset: opts.defaults?.repeat || 'none', mode: opts.defaults?.repeatMode || 'fixed', getDate: () => (tbd.checked ? `${tbdMonth.value}-01` : date.value), getAmount: () => amount.getValue(), getType: () => type, onChange: () => { mode.repeat = rep.active; if (mode.repeat) mode.parcel = false; dirty = true; syncExtras(); } });
+  const repeatSel = rep.control;
   // Previsões mensais ativas às quais um gasto pode ser vinculado (consome o valor previsto).
   const forecastSel = h('select', { class: 'select', name: 'forecast', 'aria-label': 'Conta na previsão mensal' });
   let forecastTouched = Boolean(base.forecastId);
@@ -147,7 +150,12 @@ export function openEntryForm(opts = {}) {
   fBill.append(billUse);
 
   const parcelBox = h('div', { class: 'extra-box', hidden: true }, h('div', { class: 'form-grid' }, field('Parcelas', parcelCount), field('Primeira competência', parcelFirst)), parcelPreview);
-  const fRepeat = field('Repetir', repeatSel);
+  const fRepeat = h('div', { class: 'repeat-line' }, h('span', { class: 'field-label', id: 'repeat-label' }, 'Repetir'), repeatSel);
+  repeatSel.setAttribute('aria-labelledby', 'repeat-label');
+  // Ocorrência de uma série: mostra a regra e o atalho para editá-la (em vez de "Repetir").
+  const seriesLine = seriesRule ? h('div', { class: 'repeat-line is-series' }, h('span', { class: 'field-label' }, 'Repete'),
+    h('span', { class: 'small' }, icon('repeat', 'icon-sm'), ` ${describeFrequency(seriesRule)}`),
+    h('button', { class: 'link-btn small', type: 'button', onclick: () => { dirty = false; modal.close(); editSeries(seriesRule, existing?.occurrenceDate || occ?.date || existing?.date || null); } }, 'Editar série')) : null;
   const repeatBox = rep.box;
   const detailsBox = h('div', { class: 'extra-box', hidden: true }, h('div', { class: 'form-grid' }, fMethod, fNote));
   const toggles = h('div', { class: 'more-toggles' }, isEdit ? null : parcelChip, detailsChip);
@@ -163,10 +171,11 @@ export function openEntryForm(opts = {}) {
     isRefund ? null : h('div', { class: 'form-row' }, typeSeg),
     h('div', { class: 'form-grid form-grid-amount' }, fAmount, fDate),
     fDesc,
-    h('div', { class: 'form-grid' }, fCategory, fSource, fTo, fBlock, fStatus, isEdit ? null : fRepeat, fForecast, fBill, h('div', { class: 'field f-restricted' }, restricted)),
+    h('div', { class: 'form-grid' }, fCategory, fSource, fTo, fBlock, fStatus, fForecast, fBill, h('div', { class: 'field f-restricted' }, restricted)),
     suggestNote,
     billInfo,
-    toggles, parcelBox, repeatBox, detailsBox,
+    isEdit && !canRepeatExisting ? seriesLine : fRepeat, repeatBox,
+    toggles, parcelBox, detailsBox,
     similarBox,
   );
 
@@ -207,7 +216,7 @@ export function openEntryForm(opts = {}) {
     restricted.parentElement.hidden = t !== 'income';
     parcelChip.hidden = t !== 'expense';
     if (t !== 'expense') mode.parcel = false;
-    fRepeat.hidden = t === 'transfer' || isEdit || isRefund;
+    fRepeat.hidden = t === 'transfer' || isRefund || (isEdit && !canRepeatExisting);
     if (t === 'transfer') { mode.repeat = false; rep.set('none'); }
     rep.update();
     category.setOptions(categoryOptions(t, category.getValue()));
@@ -265,7 +274,8 @@ export function openEntryForm(opts = {}) {
     rep.update();
     // Previsão mensal: o valor é o total do mês e não há "pago" na criação.
     fStatus.hidden = rmode === 'forecast';
-    tbdRow.hidden = !(!mode.repeat && !mode.parcel && type !== 'transfer' && (status.getValue() === 'planned' || tbd.checked) && !(existing && existing.status === 'done'));
+    const flexRepeat = mode.repeat && rmode === 'flex';
+    tbdRow.hidden = !((!mode.repeat || flexRepeat) && !mode.parcel && type !== 'transfer' && (status.getValue() === 'planned' || tbd.checked || flexRepeat) && !(existing && existing.status === 'done'));
     if (tbdRow.hidden) tbd.checked = false;
     date.disabled = tbd.checked;
     tbdMonth.hidden = !tbd.checked;
@@ -418,7 +428,8 @@ export function openEntryForm(opts = {}) {
     const { data } = c;
     pendingAgain = again;
     // Aviso de semelhança somente em lançamentos novos e avulsos; nunca bloqueia.
-    if (!isEdit && !similarAck && !mode.parcel && data.type !== 'transfer' && data.date) {
+    // Cópia pedida explicitamente (Duplicar): o aviso de semelhança seria só um clique a mais.
+    if (!isEdit && !similarAck && !opts.duplicate && !mode.parcel && data.type !== 'transfer' && data.date) {
       const month = data.monthManual ? data.month : competenceOf({ ...data }, repo.get('accounts', data.sourceId));
       const res = findSimilar({ ...data, id: draftId, month }, repo.context());
       if (res.matches.length || (res.occurrence && !mode.repeat)) { showSimilar(res, data); return; }
@@ -446,7 +457,15 @@ export function openEntryForm(opts = {}) {
       const occKey = existing?.occurrenceKey || existing?.occurrenceDate || occ?.key || occ?.date;
       const period = existing?.period || occ?.period || (occKey ? String(occKey).slice(0, 7) : null);
       const seriesChanges = Object.fromEntries(changed.map((k) => [k, data[k] ?? null]));
-      if (existing) {
+      if (existing && mode.repeat && c.repeat && canRepeatExisting) {
+        // Edição + repetição numa única transação: o lançamento vira a 1ª ocorrência.
+        const r = c.repeat;
+        const rule = await repo.convertToRecurring(existing.id, { frequency: r.frequency, interval: r.interval, endDate: r.endDate, count: r.count, mode: r.mode || 'fixed', days: r.days, perPeriod: r.perPeriod, anchorDay: r.anchorDay, estimated: r.estimated }, { ...data, rev: existing.rev });
+        dirty = false;
+        modal.close();
+        toast(r.mode === 'forecast' ? `“${data.description}” agora consome uma previsão mensal de ${formatMoney(data.amount)}` : `“${data.description}” agora se repete: ${describeFrequency(rule).toLowerCase()}`, { tone: 'success', action: { label: 'Desfazer', fn: () => repo.undoConversion(rule.id, existing).catch(toastError) } });
+        return;
+      } else if (existing) {
         await repo.saveTransaction({ ...existing, ...data, id: existing.id }, { baseRev: existing.rev || 0 });
       } else if (occ) {
         await repo.materializeOccurrence(occ.ruleId, occKey, data);
@@ -464,17 +483,28 @@ export function openEntryForm(opts = {}) {
       } else if (mode.repeat && c.repeat) {
         const r = c.repeat;
         const m = r.mode || 'fixed';
-        // A ocorrência que deu origem à série: registrada já paga ou com a data escolhida.
+        // A ocorrência deste mês é o próprio lançamento (pago, com outra data ou já com data definida).
+        // Nunca cria uma segunda ocorrência; o "pago" não é copiado para os meses seguintes.
         let first = null;
-        if (m === 'flex') first = { ...data, period: undefined, month: undefined };
-        else if (m === 'days') first = data.status === 'done' && r.days.includes(Number(data.date.slice(8, 10))) ? { ...data } : null;
-        else if (m === 'fixed') first = data.status === 'done' && r.startDate === data.date ? { ...data, status: 'done' } : null;
+        let firstKey = null;
+        let startDate = r.startDate;
+        const done = data.status === 'done';
+        if (m === 'flex') first = data.date ? { ...data, period: undefined, month: undefined } : null;
+        else if (m === 'days') {
+          const d = Number(data.date.slice(8, 10));
+          if (done || !r.days.includes(d)) { first = { ...data }; firstKey = repo.firstKeyFor({ mode: 'days', days: r.days, frequency: 'monthly' }, data.date); }
+        } else if (m === 'fixed' && r.monthStart) {
+          // Mensal de dia fixo: a ocorrência deste mês é este lançamento, mesmo em outro dia.
+          if (done || data.date !== r.monthStart) { startDate = r.monthStart; first = { ...data }; firstKey = r.monthStart; }
+          else startDate = r.monthStart;
+        } else if (m === 'fixed') first = done && r.startDate === data.date ? { ...data } : null;
+        if (first && !done) first.status = 'planned';
         const created = await repo.createRecurrence({
           id: draftId, type: data.type, description: data.description || categoryName(data.categoryId), amount: data.amount,
-          startDate: r.startDate, endDate: r.endDate || null, count: r.count, anchorDay: r.anchorDay, mode: r.mode, days: r.days, perPeriod: r.perPeriod,
+          startDate, endDate: r.endDate || null, count: r.count, anchorDay: r.anchorDay, mode: r.mode, days: r.days, perPeriod: r.perPeriod,
           frequency: r.frequency, interval: r.interval, categoryId: data.categoryId, blockId: data.blockId, sourceId: data.sourceId, method: data.method,
           restricted: data.restricted, estimated: r.estimated,
-        }, first);
+        }, first, firstKey);
         undo = () => repo.deleteRecurrence(created.id);
       } else {
         const saved = await repo.saveTransaction({ ...data, id: draftId });

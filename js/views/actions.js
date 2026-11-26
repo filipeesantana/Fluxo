@@ -8,9 +8,9 @@ import { repeatFields } from '../components/repeat-fields.js';
 import * as repo from '../database/repository.js';
 import { today, formatDate, isISODate, addDays, addMonths, monthOf, formatMonth, formatMonthShort, dateInMonth, currentMonth, firstDay, lastDay } from '../utils/dates.js';
 import { formatMoney } from '../utils/money.js';
-import { ruleMode, describeFrequency, MONTHLY_MODES } from '../services/recurrence.js';
+import { ruleMode, describeFrequency, MONTHLY_MODES, parseDays } from '../services/recurrence.js';
 import { isCard } from '../services/cards.js';
-import { categoryOptions, blockOptions, accountOptions, capitalize } from './common.js';
+import { categoryOptions, blockOptions, accountOptions, capitalize, rowActions } from './common.js';
 import { ui } from '../state.js';
 
 const keyOf = (item) => item.occurrenceKey || item.occurrenceDate || null;
@@ -106,24 +106,31 @@ export function openPayDialog(item) {
   return m;
 }
 
+/** Pode ser replicado (cópias em outros meses) ou passar a se repetir. */
+export function canReplicate(item) {
+  return Boolean(item) && !item.virtual && !item.forecast && item.type !== 'transfer' && !item.recurrenceId && !item.remainderOf;
+}
+
 export function itemMenu(item, anchor) {
   if (item.virtual) return occurrenceMenu(item, anchor);
   const tx = repo.get('transactions', item.id);
   if (!tx) return;
+  // Ocorrência prevista de uma série (já com data ou valor ajustados): mesmas ações da projetada.
+  if (tx.recurrenceId && tx.status === 'planned' && !tx.remainderOf && keyOf(tx) && repo.get('recurrences', tx.recurrenceId)) return occurrenceMenu(tx, anchor);
   const rule = tx.recurrenceId ? repo.get('recurrences', tx.recurrenceId) : null;
-  const canRepeat = !tx.recurrenceId && !tx.forecastId && !tx.planId && (tx.type === 'expense' || tx.type === 'income') && tx.date;
   const occDate = tx.occurrenceDate || tx.date || firstDay(tx.period || tx.month);
+  const income = tx.type === 'income';
   openMenu(anchor, [
-    { label: 'Editar', icon: 'edit', onSelect: () => openItem(item) },
     tx.status === 'done'
       ? { label: 'Desfazer pagamento', icon: 'undo', onSelect: () => toggleStatus(item) }
-      : { label: tx.type === 'income' ? 'Confirmar recebimento…' : 'Confirmar pagamento…', icon: 'check', onSelect: () => openPayDialog(tx) },
+      : { label: income ? 'Marcar como recebido' : 'Marcar como pago', icon: 'check', onSelect: () => toggleStatus(item) },
+    tx.status !== 'done' && tx.type !== 'transfer' ? { label: income ? 'Confirmar recebimento…' : 'Confirmar pagamento…', icon: 'edit', onSelect: () => openPayDialog(tx) } : null,
     'sep',
-    tx.type !== 'transfer' ? { label: 'Registrar novamente hoje', icon: 'plus', onSelect: () => duplicate(tx, { date: today(), status: 'done' }, 'registrado novamente hoje') } : null,
-    tx.type !== 'transfer' ? { label: 'Duplicar (mesma data)', icon: 'copy', onSelect: () => duplicate(tx, {}, 'duplicado') } : null,
-    tx.type !== 'transfer' ? { label: 'Copiar para outro mês…', icon: 'calendar', onSelect: () => openReplicateDialog(tx, { single: true }) } : null,
-    tx.type !== 'transfer' ? { label: 'Replicar para outros meses…', icon: 'layers', onSelect: () => openReplicateDialog(tx) } : null,
-    canRepeat ? { label: 'Transformar em recorrente…', icon: 'repeat', onSelect: () => openConvertToRecurring(tx) } : null,
+    canReplicate(tx) ? { label: 'Replicar para outros meses…', icon: 'layers', onSelect: () => openReplicateDialog(tx) } : null,
+    tx.type !== 'transfer' ? { label: 'Duplicar', icon: 'copy', onSelect: () => openDuplicate(tx) } : null,
+    tx.type !== 'transfer' && tx.status === 'done' ? { label: 'Registrar novamente hoje', icon: 'plus', onSelect: () => duplicate(tx, { date: today(), status: 'done' }, 'registrado novamente hoje') } : null,
+    { label: 'Editar', icon: 'edit', onSelect: () => openItem(item) },
+    'sep',
     tx.type === 'expense' ? { label: 'Registrar reembolso/estorno', icon: 'refund', onSelect: () => openEntryForm({ refundOf: tx }) } : null,
     { label: 'Calcular com este valor', icon: 'calc', onSelect: () => sendToCalculator(tx.amount, tx.description) },
     rule ? 'sep' : null,
@@ -148,17 +155,110 @@ function occurrenceMenu(item, anchor) {
     return;
   }
   const from = item.date || firstDay(item.period || item.month);
+  const income = item.type === 'income';
   openMenu(anchor, [
-    { label: item.type === 'income' ? 'Marcar como recebido' : 'Marcar como pago', icon: 'check', onSelect: () => toggleStatus(item) },
-    { label: item.type === 'income' ? 'Confirmar recebimento…' : 'Confirmar pagamento…', icon: 'check', onSelect: () => openPayDialog(item) },
-    { label: item.date ? 'Editar só esta ocorrência' : 'Definir data e editar', icon: 'edit', onSelect: () => openItem(item) },
-    { label: 'Editar esta e as próximas', icon: 'repeat', onSelect: () => editSeries(rule, from) },
+    { label: income ? 'Marcar como recebido' : 'Marcar como pago', icon: 'check', onSelect: () => toggleStatus(item) },
+    { label: income ? 'Confirmar recebimento…' : 'Confirmar pagamento…', icon: 'edit', onSelect: () => openPayDialog(item) },
+    'sep',
+    { label: item.date ? 'Alterar data…' : 'Definir data…', icon: 'calendar', onSelect: () => openOccurrenceDate(item) },
+    { label: 'Editar valor…', icon: 'edit', onSelect: () => openOccurrenceAmount(item) },
+    { label: 'Ver e editar detalhes', icon: 'list', onSelect: () => openItem(item) },
     { label: 'Calcular com este valor', icon: 'calc', onSelect: () => sendToCalculator(item.amount, item.description) },
     'sep',
     { label: 'Ignorar esta ocorrência', icon: 'x', onSelect: () => skip(item) },
+    { label: 'Cancelar esta ocorrência', icon: 'x', onSelect: () => skip(item, 'cancelled') },
+    { label: 'Editar esta e as próximas', icon: 'repeat', onSelect: () => editSeries(rule, from) },
     { label: 'Pausar série a partir daqui', icon: 'clock', onSelect: () => pauseSeries(rule, from) },
     { label: 'Encerrar série a partir daqui', icon: 'trash', danger: true, onSelect: () => endSeries(rule, from) },
   ]);
+}
+
+/** Datas de uma ocorrência: dentro do mês do compromisso (antecipar ou adiar sem mudar de mês). */
+export function openOccurrenceDate(item) {
+  const period = item.period || item.month || (item.date ? monthOf(item.date) : currentMonth());
+  const input = h('input', { class: 'input', type: 'date', name: 'occDate', value: item.date || '', min: firstDay(period), max: lastDay(period) });
+  const f = field('Data', input, { hint: `Dentro de ${formatMonth(period)}. As outras ocorrências não mudam.` });
+  const go = h('button', { class: 'btn btn-primary', type: 'submit', form: 'occ-date-form' }, 'Salvar data');
+  const form = h('form', { id: 'occ-date-form', class: 'stack', novalidate: true }, h('p', { class: 'muted small' }, `${item.description} · ${formatMoney(item.amount)}`), f,
+    item.date ? h('button', { class: 'link-btn small', type: 'button', onclick: () => save(null) }, 'Deixar a data a definir') : null);
+  let busy = false;
+  async function save(value) {
+    if (busy) return;
+    if (value && (!isISODate(value) || value < firstDay(period) || value > lastDay(period))) { f.setError(`Escolha uma data em ${formatMonth(period)}`); return; }
+    busy = true;
+    try {
+      const key = keyOf(item);
+      await repo.setOccurrenceDate(item.recurrenceId, key, value);
+      m.close();
+      toast(value ? `Data alterada para ${formatDate(value)}` : 'Data a definir', { tone: 'success', action: { label: 'Desfazer', fn: () => repo.setOccurrenceDate(item.recurrenceId, key, item.date || null).catch(toastError) } });
+    } catch (err) { toastError(err); } finally { busy = false; }
+  }
+  form.addEventListener('submit', (ev) => { ev.preventDefault(); save(input.value || null); });
+  const m = openModal({ title: item.date ? 'Alterar data' : 'Definir data', size: 'sm', body: form, className: 'occ-date-modal',
+    footer: [h('span', { class: 'grow' }), h('button', { class: 'btn', type: 'button', onclick: () => m.close() }, 'Cancelar'), go] });
+  requestAnimationFrame(() => input.focus());
+  return m;
+}
+
+/** Valor de uma ocorrência: só esta, este mês, esta e as próximas ou a série toda. */
+export function openOccurrenceAmount(item) {
+  const rule = repo.get('recurrences', item.recurrenceId);
+  if (!rule) return null;
+  const amount = moneyInput({ value: item.amount, name: 'occAmount' });
+  const f = field('Novo valor', amount);
+  const go = h('button', { class: 'btn btn-primary', type: 'submit', form: 'occ-amount-form' }, 'Continuar');
+  const form = h('form', { id: 'occ-amount-form', class: 'stack', novalidate: true }, h('p', { class: 'muted small' }, `${item.description} · ${item.date ? formatDate(item.date) : 'data a definir'}`), f);
+  form.addEventListener('submit', async (ev) => {
+    ev.preventDefault();
+    const v = amount.getValue();
+    if (!(v > 0)) { f.setError('Informe um valor maior que zero'); return; }
+    if (v === item.amount) { m.close(); return; }
+    m.close();
+    const mode = ruleMode(rule);
+    const scope = await askScope({ title: `Aplicar ${formatMoney(v)} a…`, allowMonth: mode === 'days' || mode === 'flex' });
+    if (!scope) return;
+    const key = keyOf(item);
+    const period = item.period || String(key).slice(0, 7);
+    try {
+      if (scope === 'one') await repo.materializeOccurrence(rule.id, key, { amount: v });
+      else if (scope === 'month') await repo.editSeriesPeriod(rule.id, period, { amount: v });
+      else if (scope === 'future') { await repo.materializeOccurrence(rule.id, key, { amount: v }); await repo.editSeriesFrom(rule.id, mode === 'fixed' ? addDays(item.date || item.occurrenceDate, 1) : firstDay(addMonths(period, 1)), { amount: v }); }
+      else await repo.saveRecurrence({ ...rule, amount: v });
+      toast(`Valor alterado para ${formatMoney(v)}`, { tone: 'success' });
+    } catch (err) { toastError(err); }
+  });
+  const m = openModal({ title: 'Editar valor', size: 'sm', body: form, footer: [h('span', { class: 'grow' }), h('button', { class: 'btn', type: 'button', onclick: () => m.close() }, 'Cancelar'), go] });
+  requestAnimationFrame(() => amount.input.focus());
+  return m;
+}
+
+/** Ocorrência extra no mês (ex.: uma terceira consulta), com data opcional. */
+export function openExtraOccurrence(rule, month) {
+  const opId = uid();
+  const date = h('input', { class: 'input', type: 'date', name: 'extraDate', min: firstDay(month), max: lastDay(month) });
+  const amount = moneyInput({ value: rule.amount, name: 'extraAmount' });
+  const fDate = field(h('span', null, 'Data ', h('span', { class: 'opt' }, 'opcional')), date, { hint: 'Em branco: data a definir' });
+  const fAmount = field('Valor', amount);
+  const go = h('button', { class: 'btn btn-primary', type: 'submit', form: 'extra-form' }, 'Adicionar');
+  const form = h('form', { id: 'extra-form', class: 'stack', novalidate: true }, h('p', { class: 'muted small' }, `${rule.description} · ${formatMonth(month)}. Só este mês muda.`), h('div', { class: 'form-grid' }, fDate, fAmount));
+  let busy = false;
+  form.addEventListener('submit', async (ev) => {
+    ev.preventDefault();
+    if (busy) return;
+    const v = amount.getValue();
+    fAmount.setError(v > 0 ? '' : 'Informe um valor');
+    const okDate = !date.value || (isISODate(date.value) && date.value >= firstDay(month) && date.value <= lastDay(month));
+    fDate.setError(okDate ? '' : `Escolha uma data em ${formatMonth(month)}`);
+    if (!(v > 0) || !okDate) return;
+    busy = true; go.classList.add('is-busy');
+    try {
+      const tx = await repo.addExtraOccurrence(rule.id, month, { date: date.value || null, amount: v, opId });
+      m.close();
+      toast('Ocorrência extra adicionada', { tone: 'success', action: { label: 'Desfazer', fn: () => repo.deleteTransaction(tx.id).catch(toastError) } });
+    } catch (err) { toastError(err); } finally { busy = false; go.classList.remove('is-busy'); }
+  });
+  const m = openModal({ title: 'Adicionar ocorrência', size: 'sm', body: form, className: 'extra-modal', footer: [h('span', { class: 'grow' }), h('button', { class: 'btn', type: 'button', onclick: () => m.close() }, 'Cancelar'), go] });
+  return m;
 }
 
 export function sendToCalculator(cents, label) {
@@ -198,91 +298,172 @@ export async function closeForecast(rule, month, closed = true) {
 }
 
 /**
- * Replicar para outros meses: escolha rápida (próximo, 3, 6, 12) ou meses
- * específicos; datas iguais, um dia escolhido ou datas a definir. Mostra o
- * resumo antes de confirmar. As cópias começam como previstas.
+ * Replicar: um único painel para "copiar para outros meses" e "repetir todo mês".
+ * - Próximo mês / 3 / 6 / 12 / meses escolhidos → cópias avulsas previstas (ids por operação: o clique repetido não duplica);
+ * - Todos os meses → série recorrente; o próprio lançamento vira a 1ª ocorrência (sem cópia);
+ * - datas: mesmo dia, outro dia, vários dias ou a definir (nunca inventadas).
+ * Já vem com "Próximo mês" escolhido: Replicar → Replicar conclui; Replicar → Todos os meses → Repetir todo mês.
  */
-export function openReplicateDialog(tx, { single = false } = {}) {
-  const base = tx.date ? monthOf(tx.date) : tx.month;
-  const horizon = Array.from({ length: 24 }, (_, i) => addMonths(base, i + 1));
-  const chosen = new Set(single ? [horizon[0]] : []);
+const WHEN = [['1', 'Próximo mês'], ['3', 'Próximos 3 meses'], ['6', 'Próximos 6 meses'], ['12', 'Próximos 12 meses'], ['all', 'Todos os meses'], ['pick', 'Escolher meses']];
+
+export function openReplicateDialog(tx, { when: initialWhen = '1' } = {}) {
+  tx = repo.get('transactions', tx.id) || tx;
+  const base = tx.date ? monthOf(tx.date) : tx.period || tx.month;
+  const srcDay = tx.date ? Number(tx.date.slice(8, 10)) : null;
   const opId = uid();
-  const quick = single ? null : h('div', { class: 'chips' }, ...[[1, 'Próximo mês'], [3, 'Próximos 3'], [6, 'Próximos 6'], [12, 'Próximos 12']].map(([n, l]) =>
-    h('button', { class: 'chip', type: 'button', onclick: () => { chosen.clear(); horizon.slice(0, n).forEach((m) => chosen.add(m)); drawMonths(); } }, l)));
+  const seriesBlock = tx.recurrenceId || tx.forecastId ? 'Este lançamento já faz parte de uma série.' : tx.planId ? 'Parcelas seguem o parcelamento; use cópias avulsas.' : tx.type === 'refund' ? 'Reembolsos não se repetem; use cópias avulsas.' : null;
+  let when = initialWhen === 'all' && seriesBlock ? '1' : initialWhen;
+  let dateMode = srcDay ? 'same' : 'flex';
+  const chosen = new Set();
+
+  const whenBtns = WHEN.map(([v, label]) => {
+    const disabled = v === 'all' && Boolean(seriesBlock);
+    return h('button', { class: 'chip', type: 'button', role: 'radio', 'aria-checked': String(v === when), disabled, title: disabled ? seriesBlock : null, dataset: { when: v }, onclick: () => { when = v; sync(); } }, label);
+  });
+  const whenGroup = h('div', { class: 'chips', role: 'radiogroup', 'aria-label': 'Para quando' }, ...whenBtns);
+
+  const startMonth = h('input', { class: 'input input-sm', type: 'month', name: 'repStart', value: addMonths(base, 1), 'aria-label': 'A partir de' });
+  const endMonth = h('input', { class: 'input input-sm', type: 'month', name: 'repEnd', 'aria-label': 'Até' });
   const monthsBox = h('div', { class: 'month-picks', role: 'group', 'aria-label': 'Meses' });
   const drawMonths = () => {
+    const from = /^\d{4}-\d{2}$/.test(startMonth.value) ? startMonth.value : addMonths(base, 1);
+    const horizon = Array.from({ length: 24 }, (_, i) => addMonths(from, i));
+    for (const m of [...chosen]) if (!horizon.includes(m)) horizon.push(m);
+    horizon.sort();
     put(monthsBox, ...horizon.map((m) => {
       const on = chosen.has(m);
-      return h('button', { class: `month-pick${on ? ' is-on' : ''}`, type: 'button', 'aria-pressed': String(on), dataset: { month: m }, onclick: () => { if (single) chosen.clear(); if (chosen.has(m)) chosen.delete(m); else chosen.add(m); drawMonths(); } }, capitalize(formatMonthShort(m)));
+      return h('button', { class: `month-pick${on ? ' is-on' : ''}`, type: 'button', 'aria-pressed': String(on), dataset: { month: m }, onclick: () => { if (chosen.has(m)) chosen.delete(m); else chosen.add(m); drawMonths(); updateSummary(); } }, capitalize(formatMonthShort(m)));
     }));
-    updateSummary();
   };
-  const rangeFrom = h('input', { class: 'input', type: 'month', 'aria-label': 'De' });
-  const rangeTo = h('input', { class: 'input', type: 'month', 'aria-label': 'Até' });
-  const applyRange = h('button', { class: 'btn btn-sm', type: 'button', onclick: () => {
-    if (!rangeFrom.value || !rangeTo.value || rangeTo.value < rangeFrom.value) { toast('Escolha um intervalo válido', { tone: 'error' }); return; }
-    chosen.clear();
-    for (let m = rangeFrom.value, i = 0; m <= rangeTo.value && i < 60; m = addMonths(m, 1), i++) chosen.add(m);
-    for (const m of chosen) if (!horizon.includes(m)) horizon.push(m);
-    horizon.sort();
-    drawMonths();
-  } }, 'Usar intervalo');
-  let dateMode = tx.date ? 'same' : 'flex';
-  const day = h('input', { class: 'input', type: 'number', min: 1, max: 31, value: tx.date ? Number(tx.date.slice(8, 10)) : 10, 'aria-label': 'Dia' });
-  const dm = segmented({ label: 'Datas', value: dateMode, size: 'segmented-sm', options: [{ value: 'same', label: 'Mesmo dia' }, { value: 'day', label: 'Outro dia' }, { value: 'flex', label: 'A definir' }], onChange: (v) => { dateMode = v; day.hidden = v !== 'day'; updateSummary(); } });
-  day.hidden = dateMode !== 'day';
+
+  const day = h('input', { class: 'input input-num', type: 'number', min: 1, max: 31, name: 'repDay', value: srcDay || 10, 'aria-label': 'Dia do mês' });
+  const days = h('input', { class: 'input', name: 'repDays', placeholder: 'Ex.: 5, 20', inputmode: 'numeric', 'aria-label': 'Dias do mês', value: srcDay ? String(srcDay) : '' });
+  const dm = segmented({ label: 'Datas', value: dateMode, size: 'segmented-sm', options: [
+    srcDay ? { value: 'same', label: `Mesmo dia (${srcDay})` } : null, { value: 'day', label: 'Outro dia' }, { value: 'days', label: 'Vários dias' }, { value: 'flex', label: 'A definir' }].filter(Boolean),
+  onChange: (v) => { dateMode = v; sync(); } });
+  const startRow = h('label', { class: 'inline-field' }, h('span', { class: 'small faint' }, 'A partir de'), startMonth);
+  const endRow = h('label', { class: 'inline-field' }, h('span', { class: 'small faint' }, 'Até'), endMonth, h('span', { class: 'faint xsmall' }, 'opcional'));
   const summary = h('div', { class: 'replicate-summary', 'aria-live': 'polite' });
-  const updateSummary = () => {
-    const ms = [...chosen].sort();
-    if (!ms.length) { put(summary, h('p', { class: 'faint small' }, 'Escolha os meses.')); return; }
-    const d = (m) => (dateMode === 'flex' ? 'data a definir' : formatDate(dateInMonth(m, dateMode === 'day' ? Number(day.value) || 1 : Number((tx.date || '0000-00-01').slice(8, 10)))));
-    const similar = ms.filter((m) => repo.list('transactions').some((x) => x.id !== tx.id && (x.month === m) && x.description === tx.description && x.amount === tx.amount));
+  const go = h('button', { class: 'btn btn-primary', type: 'button', name: 'repGo' }, 'Replicar');
+
+  /** Meses das cópias avulsas. */
+  function months() {
+    if (when === 'pick') return [...chosen].sort();
+    if (when === 'all') return [];
+    const from = /^\d{4}-\d{2}$/.test(startMonth.value) ? startMonth.value : addMonths(base, 1);
+    return Array.from({ length: Number(when) }, (_, i) => addMonths(from, i));
+  }
+  const readDay = () => { const n = Number(day.value); return Number.isInteger(n) && n >= 1 && n <= 31 ? n : null; };
+  const dayList = () => parseDays(days.value);
+  function datesOf(m) {
+    if (dateMode === 'flex') return [null];
+    if (dateMode === 'days') return dayList().map((d) => dateInMonth(m, d));
+    return [dateInMonth(m, dateMode === 'day' ? readDay() || 1 : srcDay)];
+  }
+  function problem() {
+    if (dateMode === 'day' && !readDay()) return 'Dia do mês: de 1 a 31.';
+    if (dateMode === 'days' && !dayList().length) return 'Informe os dias do mês (ex.: 5, 20).';
+    if (when === 'all') {
+      if (seriesBlock) return seriesBlock;
+      if (endMonth.value && /^\d{4}-\d{2}$/.test(startMonth.value) && endMonth.value < startMonth.value) return 'O mês final é anterior ao inicial.';
+      return null;
+    }
+    if (!months().length) return 'Escolha pelo menos um mês.';
+    if (months().length > 60) return 'Escolha no máximo 60 meses de uma vez.';
+    return null;
+  }
+  /** Série: começa no próprio lançamento (vira a 1ª ocorrência) ou num mês posterior (o original fica avulso). */
+  function seriesPlan() {
+    const start = /^\d{4}-\d{2}$/.test(startMonth.value) ? startMonth.value : base;
+    const linkOriginal = start <= base;
+    const mode = dateMode === 'flex' ? 'flex' : dateMode === 'days' ? 'days' : 'fixed';
+    const anchorDay = dateMode === 'day' ? readDay() : srcDay;
+    const desc = mode === 'flex' ? 'todo mês, data a definir' : mode === 'days' ? `todo mês nos dias ${dayList().join(', ')}` : `todo mês no dia ${anchorDay}`;
+    return { start: linkOriginal ? base : start, linkOriginal, mode, anchorDay, desc, endDate: /^\d{4}-\d{2}$/.test(endMonth.value) ? lastDay(endMonth.value) : null };
+  }
+
+  function updateSummary() {
+    const err = problem();
+    go.disabled = Boolean(err);
+    if (when === 'all') {
+      go.textContent = 'Repetir todo mês';
+      if (err) { put(summary, h('p', { class: 'note is-warn' }, icon('alert', 'icon-sm'), err)); return; }
+      const p = seriesPlan();
+      const perMonth = p.mode === 'days' ? tx.amount * dayList().length : tx.amount;
+      put(summary,
+        h('strong', { class: 'small' }, `Repete ${p.desc}, a partir de ${formatMonth(p.start)}${p.endDate ? ` até ${formatMonth(monthOf(p.endDate))}` : ', sem data de término'} · ${formatMoney(perMonth)} por mês`),
+        h('p', { class: 'faint small' }, p.linkOriginal ? `Este lançamento passa a ser a 1ª ocorrência: nada é duplicado. Os próximos meses entram como previstos${tx.status === 'done' ? ' (o pagamento não é copiado)' : ''}.` : 'Este lançamento continua avulso; a série começa no mês escolhido.'));
+      return;
+    }
+    go.textContent = 'Replicar';
+    if (err) { put(summary, h('p', { class: 'faint small' }, err)); return; }
+    const ms = months();
+    const rows = ms.flatMap((m) => datesOf(m).map((d) => ({ m, d })));
+    const similar = ms.filter((m) => repo.list('transactions').some((x) => x.id !== tx.id && x.month === m && x.description === tx.description && x.amount === tx.amount));
     put(summary,
-      h('strong', { class: 'small' }, `${ms.length} ${ms.length === 1 ? 'lançamento previsto será criado' : 'lançamentos previstos serão criados'} · ${formatMoney(tx.amount * ms.length)} no total`),
-      h('ul', { class: 'replicate-list' }, ...ms.slice(0, 12).map((m) => h('li', null, `${capitalize(formatMonth(m))} — ${d(m)} — ${formatMoney(tx.amount)}`)), ms.length > 12 ? h('li', { class: 'faint' }, `… e mais ${ms.length - 12}`) : null),
+      h('strong', { class: 'small' }, `${rows.length} ${rows.length === 1 ? 'lançamento previsto será criado' : 'lançamentos previstos serão criados'} · ${formatMoney(tx.amount * rows.length)} no total`),
+      h('ul', { class: 'replicate-list' }, ...rows.slice(0, 8).map(({ m, d }) => h('li', null, `${capitalize(formatMonth(m))} — ${d ? formatDate(d) : 'data a definir'} — ${formatMoney(tx.amount)}`)), rows.length > 8 ? h('li', { class: 'faint' }, `… e mais ${rows.length - 8}`) : null),
       similar.length ? h('p', { class: 'note is-warn' }, icon('alert', 'icon-sm'), `Já existe um lançamento igual em ${similar.map((m) => formatMonthShort(m)).join(', ')}. Confira para não duplicar.`) : null,
       tx.status === 'done' ? h('p', { class: 'faint small' }, 'As cópias começam como previstas: o pagamento não é copiado.') : null);
-  };
-  day.addEventListener('input', updateSummary);
-  const go = h('button', { class: 'btn btn-primary', type: 'button', onclick: async () => {
-    if (!chosen.size) { toast('Escolha pelo menos um mês', { tone: 'error' }); return; }
-    go.classList.add('is-busy'); go.disabled = true;
+  }
+
+  function sync() {
+    whenBtns.forEach((b) => b.setAttribute('aria-checked', String(b.dataset.when === when)));
+    monthsBox.hidden = when !== 'pick';
+    if (when === 'all' && !startMonth.dataset.touched) startMonth.value = base < currentMonth() ? currentMonth() : base; // lançamento antigo: a série começa agora, sem meses atrasados
+    else if (when !== 'all' && !startMonth.dataset.touched) startMonth.value = addMonths(base, 1);
+    endRow.hidden = when !== 'all';
+    day.hidden = dateMode !== 'day';
+    days.hidden = dateMode !== 'days';
+    if (when === 'pick') drawMonths();
+    updateSummary();
+  }
+  for (const el of [day, days, endMonth]) el.addEventListener('input', updateSummary);
+  startMonth.addEventListener('change', () => { startMonth.dataset.touched = '1'; if (when === 'pick') drawMonths(); updateSummary(); });
+
+  let busy = false;
+  go.addEventListener('click', async () => {
+    if (busy || problem()) return;
+    busy = true; go.classList.add('is-busy'); go.disabled = true;
     try {
-      const created = await repo.replicateTransaction(tx.id, { months: [...chosen], dateMode, day: Number(day.value) || null, opId });
+      if (when === 'all') {
+        const p = seriesPlan();
+        let rule;
+        if (p.linkOriginal) {
+          rule = await repo.convertToRecurring(tx.id, { frequency: 'monthly', interval: 1, mode: p.mode, anchorDay: p.anchorDay, days: p.mode === 'days' ? dayList() : null, perPeriod: 1, endDate: p.endDate });
+        } else {
+          const startDate = p.mode === 'fixed' ? dateInMonth(p.start, p.anchorDay) : firstDay(p.start);
+          rule = await repo.createRecurrence({ id: opId, type: tx.type, description: tx.description, amount: tx.amount, startDate, endDate: p.endDate, frequency: 'monthly', interval: 1,
+            mode: p.mode === 'fixed' ? undefined : p.mode, anchorDay: p.mode === 'fixed' ? p.anchorDay : undefined, days: p.mode === 'days' ? dayList() : undefined, perPeriod: p.mode === 'flex' ? 1 : undefined,
+            categoryId: tx.categoryId, blockId: tx.blockId, sourceId: tx.sourceId, method: tx.method || null, restricted: tx.restricted });
+        }
+        m.close();
+        toast(`“${tx.description}” agora se repete ${p.desc}`, { tone: 'success', action: { label: 'Desfazer', fn: () => (p.linkOriginal ? repo.undoConversion(rule.id, tx) : repo.deleteRecurrence(rule.id)).catch(toastError) } });
+        return;
+      }
+      const created = await repo.replicateTransaction(tx.id, { months: months(), dateMode, day: readDay(), days: dayList(), opId });
       m.close();
-      toast(`${created.length} ${created.length === 1 ? 'cópia criada' : 'cópias criadas'} como previstas`, { tone: 'success', action: created.length ? { label: 'Desfazer', fn: () => Promise.all(created.map((c) => repo.deleteTransaction(c.id))).catch(toastError) } : null });
-    } catch (err) { toastError(err); go.disabled = false; } finally { go.classList.remove('is-busy'); }
-  } }, single ? 'Copiar' : 'Replicar');
-  const m = openModal({ title: single ? 'Copiar para outro mês' : 'Replicar para outros meses', size: 'md', className: 'replicate-modal', body: h('div', { class: 'stack-lg' },
-    h('p', { class: 'muted small' }, `${tx.description} · ${formatMoney(tx.amount)}${tx.date ? ` · ${formatDate(tx.date)}` : ''}`),
-    quick, monthsBox,
-    single ? null : h('div', { class: 'row wrap' }, h('span', { class: 'small faint' }, 'Intervalo:'), rangeFrom, rangeTo, applyRange),
-    h('div', { class: 'row wrap' }, h('span', { class: 'small' }, 'Datas das cópias:'), dm, day),
+      const ms = [...new Set(created.map((c) => c.period || c.month))];
+      toast(`${created.length} ${created.length === 1 ? 'cópia prevista criada' : 'cópias previstas criadas'}${ms.length ? ` (${ms.slice(0, 3).map(formatMonthShort).join(', ')}${ms.length > 3 ? '…' : ''})` : ''}`, { tone: 'success', action: created.length ? { label: 'Desfazer', fn: () => repo.deleteTransactions(created.map((c) => c.id)).catch(toastError) } : null });
+    } catch (err) { toastError(err); } finally { busy = false; go.classList.remove('is-busy'); if (document.body.contains(go)) go.disabled = Boolean(problem()); }
+  });
+
+  const m = openModal({ title: 'Replicar', size: 'md', className: 'replicate-modal', body: h('div', { class: 'stack' },
+    h('p', { class: 'muted small' }, `${tx.description} · ${formatMoney(tx.amount)}${tx.date ? ` · ${formatDate(tx.date)}` : ' · data a definir'}${tx.status === 'done' ? ' · realizado' : ''}`),
+    h('div', { class: 'stack-sm' }, h('span', { class: 'field-label' }, 'Para quando'), whenGroup, monthsBox),
+    h('div', { class: 'stack-sm' }, h('span', { class: 'field-label' }, 'Datas'), h('div', { class: 'row wrap gap-sm' }, dm, day, days)),
+    h('div', { class: 'row wrap gap-sm' }, startRow, endRow),
     summary),
   footer: [h('span', { class: 'grow' }), h('button', { class: 'btn', type: 'button', onclick: () => m.close() }, 'Cancelar'), go] });
-  drawMonths();
+  sync();
   return m;
 }
 
-export function openConvertToRecurring(tx) {
-  const rep = repeatFields({ preset: 'monthly', mode: 'fixed', getDate: () => tx.date, getAmount: () => tx.amount, getType: () => tx.type, idPrefix: 'cv' });
-  const go = h('button', { class: 'btn btn-primary', type: 'button', onclick: async () => {
-    const err = rep.validate();
-    if (err) { toast(err, { tone: 'error' }); return; }
-    const r = rep.read();
-    if (!r) { toast('Escolha como repetir', { tone: 'error' }); return; }
-    go.classList.add('is-busy');
-    try {
-      await repo.convertToRecurring(tx.id, { frequency: r.frequency, interval: r.interval, endDate: r.endDate, count: r.count, mode: r.mode || 'fixed', days: r.days, perPeriod: r.perPeriod });
-      m.close();
-      toast(r.mode === 'forecast' ? `“${tx.description}” agora consome uma previsão mensal de ${formatMoney(tx.amount)}.` : `“${tx.description}” agora é recorrente. Este lançamento é a primeira ocorrência.`, { tone: 'success' });
-    } catch (e) { toastError(e); } finally { go.classList.remove('is-busy'); }
-  } }, 'Transformar');
-  rep.box.hidden = false;
-  const m = openModal({ title: 'Transformar em recorrente', size: 'md', body: h('div', { class: 'stack-lg' },
-    h('p', { class: 'muted small' }, `“${tx.description}” (${formatMoney(tx.amount)}, ${formatDate(tx.date)}) passa a fazer parte da série. Nenhuma cópia é criada.`),
-    field('Repetir', rep.select), rep.box),
-  footer: [h('span', { class: 'grow' }), h('button', { class: 'btn', type: 'button', onclick: () => m.close() }, 'Cancelar'), go] });
+/** Duplicar: abre um novo lançamento já preenchido (nada é gravado antes de Salvar). */
+export function openDuplicate(tx) {
+  const { id, rev, recurrenceId, occurrenceDate, occurrenceKey, period, remainderOf, plannedAmount, planId, installment, createdAt, updatedAt, replicaOf, refundOf, forecastId, monthManual, month, ...rest } = tx;
+  const date = tx.date || today();
+  openEntryForm({ duplicate: true, defaults: { ...rest, date, status: date > today() ? 'planned' : tx.status === 'planned' ? 'planned' : 'done' } });
 }
 
 async function duplicate(tx, overrides = {}, verb = 'duplicado') {
@@ -322,11 +503,12 @@ export async function removeTx(tx) {
   } catch (err) { toastError(err); }
 }
 
-export async function skip(item) {
+export async function skip(item, reason = 'skipped') {
   const key = keyOf(item);
+  const word = reason === 'cancelled' ? 'cancelada' : 'ignorada';
   try {
-    await repo.skipOccurrence(item.recurrenceId, key);
-    toast(item.date ? `Ocorrência de ${formatDate(item.date)} ignorada` : 'Ocorrência ignorada', { action: { label: 'Desfazer', fn: () => repo.unskipOccurrence(item.recurrenceId, key).catch(toastError) } });
+    await repo.skipOccurrence(item.recurrenceId, key, { reason });
+    toast(item.date ? `Ocorrência de ${formatDate(item.date)} ${word}` : `Ocorrência ${word}`, { action: { label: 'Desfazer', fn: () => repo.unskipOccurrence(item.recurrenceId, key).catch(toastError) } });
   } catch (err) { toastError(err); }
 }
 
@@ -349,10 +531,8 @@ export function openRecurrenceForm({ rule = null, fromDate = null, defaults = {}
   const amount = moneyInput({ value: r.amount ?? null, name: 'recAmount' });
   const startD = h('input', { class: 'input', type: 'date', value: fromDate || r.startDate, name: 'recStart' });
   const presetOf = (x) => (ruleMode(x) !== 'fixed' ? 'monthly' : x.frequency === 'weekly' && x.interval === 1 ? 'weekly' : x.frequency === 'weekly' && x.interval === 2 ? 'biweekly' : x.frequency === 'monthly' && (x.interval || 1) === 1 ? 'monthly' : x.frequency === 'yearly' && (x.interval || 1) === 1 ? 'yearly' : 'custom');
-  const rep = repeatFields({ preset: presetOf(r), mode: ruleMode(r), getDate: () => startD.value, getAmount: () => amount.getValue(), getType: () => typeV, rule: { ...r, startDate: undefined }, onChange: () => syncLabels() });
   // Na regra, "Não repetir" não faz sentido.
-  rep.select.querySelector('option[value="none"]')?.remove();
-  rep.update();
+  const rep = repeatFields({ preset: presetOf(r), mode: ruleMode(r), allowNone: false, getDate: () => startD.value, getAmount: () => amount.getValue(), getType: () => typeV, rule: r, onChange: () => syncLabels() });
   const opts = (list, empty) => [h('option', { value: '' }, empty), ...list.map((o) => h('option', { value: o.value }, o.label))];
   const category = h('select', { class: 'select' }, ...opts(categoryOptions(r.type, r.categoryId), 'Sem categoria'));
   category.value = r.categoryId || '';
@@ -409,4 +589,6 @@ export function editSeries(rule, fromDate) {
 }
 
 export function formatAmountShort(c) { return formatMoney(c); }
+rowActions.replicate = (item) => openReplicateDialog(item);
+rowActions.canReplicate = canReplicate;
 export { MONTHLY_MODES, describeFrequency, currentMonth, lastDay, ui };
