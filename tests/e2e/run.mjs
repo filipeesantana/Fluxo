@@ -48,9 +48,9 @@ async function waitText(page, selectorOrFn, expected, { timeout = 4000 } = {}) {
 
 const kpi = (page, label) => async () => norm(await page.locator('.kpi', { has: page.locator('.kpi-label', { hasText: label }) }).locator('.kpi-value').textContent());
 async function expectKpi(page, label, value) { await waitText(page, kpi(page, label), value); }
-const evolutionHint = (page) => async () => norm(await page.locator('.col-section', { has: page.locator('h2', { hasText: 'Evolução do mês' }) }).locator('.hint').textContent());
+const evolutionHint = (page) => async () => norm(await page.locator('.panel', { has: page.locator('h2', { hasText: /^Evolução$/ }) }).locator('.panel-head .hint').textContent());
 async function barValue(page, section, name) {
-  const row = page.locator('.col-section', { has: page.locator('h2', { hasText: section }) }).locator('.bar-row', { has: page.locator('.bar-name', { hasText: name }) });
+  const row = page.locator('.panel', { has: page.locator('h2', { hasText: section }) }).locator('.bar-row', { has: page.locator('.bar-name', { hasText: name }) });
   if (!(await row.count())) return null;
   return norm(await row.first().locator('.bar-value').textContent());
 }
@@ -65,22 +65,32 @@ function api(page, fn, arg) {
 }
 
 async function openForm(page) {
-  await page.locator('.page-head .btn-primary', { hasText: 'Novo lançamento' }).click();
+  await page.locator('.sidebar [data-action="new-entry"]').click();
   await page.waitForSelector('.entry-modal');
   return page.locator('.entry-modal');
 }
 
+/** Seletor pesquisável: abre, digita e confirma com Enter. */
 async function pick(modal, name, label) {
-  await modal.locator(`select[name=${name}]`).selectOption({ label });
+  const page = modal.page();
+  await modal.locator(`[data-picker="${name}"] .picker-btn`).click();
+  const input = page.locator('.picker-pop.is-open input');
+  await input.waitFor();
+  await input.fill(label);
+  await input.press('Enter');
+  await page.waitForFunction(([n, v]) => document.querySelector(`[data-picker="${n}"] .picker-value`)?.textContent === v, [name, label]);
 }
 
+/** Cria uma opção nova dentro do seletor (com escolha do tipo para contas). */
 async function createInline(modal, name, value, kind) {
-  await modal.locator(`select[name=${name}]`).selectOption('__create__');
-  if (kind) await modal.locator(`select[name=${name}] ~ select.select-inline`).selectOption(kind);
-  const input = modal.locator(`select[name=${name}] ~ input.input`);
+  const page = modal.page();
+  await modal.locator(`[data-picker="${name}"] .picker-btn`).click();
+  const input = page.locator('.picker-pop.is-open input');
+  await input.waitFor();
   await input.fill(value);
   await input.press('Enter');
-  await modal.page().waitForFunction(([n, v]) => [...document.querySelector(`select[name=${n}]`).selectedOptions].some((o) => o.textContent === v), [name, value]);
+  if (name === 'source' || name === 'to') await page.locator(`.picker-pop .picker-kinds .chip[data-kind="${kind || 'checking'}"]`).click();
+  await page.waitForFunction(([n, v]) => document.querySelector(`[data-picker="${n}"] .picker-value`)?.textContent === v, [name, value]);
 }
 
 async function save(modal) {
@@ -113,7 +123,8 @@ async function run() {
 
   await test('Cenário 15/1/7 — banco vazio, primeiro lançamento pela interface, agrupamentos e persistência', async () => {
     const { context, page } = await newPage();
-    await page.waitForSelector('.empty-title');
+    await page.waitForSelector('.kpi-grid');
+    assert(await page.locator('.empty-block').count() >= 3, 'estrutura do painel visível com estados vazios');
     const m = await openForm(page);
     await m.locator('input[name=amount]').fill('129,90');
     await m.locator('input[name=description]').fill('Jantar Figueiredo');
@@ -130,7 +141,7 @@ async function run() {
     await waitText(page, evolutionHint(page), 'R$ 129,90 em despesas');
     await expectKpi(page, 'Despesas realizadas', 'R$ 0,00');
     await page.reload();
-    await page.waitForSelector('.kpis');
+    await page.waitForSelector('.kpi-grid');
     eq(await barValue(page, 'Por bloco', 'Namorada'), 'R$ 129,90', 'persistência após recarregar');
     eq(await page.locator('.tx-row').count(), 1, 'uma única movimentação');
     await noErrors(page);
@@ -160,7 +171,7 @@ async function run() {
     const m = await openForm(page);
     await m.locator('input[name=amount]').fill('1000');
     await m.locator('input[name=description]').fill('Capacete');
-    await m.getByText('Parcelar', { exact: true }).click();
+    await m.locator('[data-toggle="parcel"]').click();
     await m.locator('.extra-box input[type=number]').fill('3');
     await waitText(page, '.extra-box .faint', /1ª de R\$ 333,34 e 2× de R\$ 333,33 · total exato R\$ 1.000,00/);
     await save(m);
@@ -184,7 +195,7 @@ async function run() {
     await m.waitFor({ state: 'detached' });
     await page.goto(`${base}#/visao-geral`);
     for (let i = 0; i < 12; i++) {
-      if (i === 6) { await page.reload(); await page.waitForSelector('.kpis'); for (let k = 0; k < 6; k++) await page.keyboard.press('ArrowRight'); }
+      if (i === 6) { await page.reload(); await page.waitForSelector('.kpi-grid'); for (let k = 0; k < 6; k++) await page.keyboard.press('ArrowRight'); }
       await page.waitForTimeout(60);
       const rows = await page.locator('.tx-row', { hasText: 'Internet' }).count();
       const label = norm(await page.locator('.month-label').textContent());
@@ -213,7 +224,7 @@ async function run() {
     await waitText(page, '.month-label', 'Dezembro de 2026');
     await expectKpi(page, 'Compromissos pendentes', 'R$ 200,00');
     await expectKpi(page, 'Despesas realizadas', 'R$ 0,00');
-    await page.getByRole('button', { name: 'Pagar fatura' }).click();
+    await page.locator('.kv-action button', { hasText: 'Pagar' }).first().click();
     const pay = page.locator('.entry-modal');
     await pick(pay, 'source', 'Conta Nubank');
     eq(norm(await pay.locator('input[name=amount]').inputValue()), '200,00', 'valor sugerido da fatura');
@@ -313,17 +324,22 @@ async function run() {
   await test('Cenários 10/11 — simulador: juros compostos conferidos e rentabilidade zero', async () => {
     const { context, page } = await newPage();
     await page.goto(`${base}#/investimentos`);
-    const sim = page.locator('.section', { has: page.locator('h2', { hasText: 'Simulador de aportes' }) });
-    const inputs = sim.locator('.sim-in input');
-    await inputs.nth(0).fill('0'); await inputs.nth(1).fill('100'); await inputs.nth(2).fill('0'); await inputs.nth(3).fill('0'); await inputs.nth(4).fill('1');
-    await waitText(page, () => sim.locator('.kv', { hasText: 'Patrimônio em 1 ano' }).locator('.kv-value').textContent().then(norm), 'R$ 1.200,00');
-    // 12% a.a. efetivos, R$ 1.000/mês por 10 anos, aporte ao fim do mês: referência independente por iteração.
-    await inputs.nth(1).fill('1000'); await inputs.nth(2).fill('12'); await inputs.nth(4).fill('10');
+    const sim = page.locator('.panel', { has: page.locator('h2', { hasText: 'Simulador de aportes' }) });
+    const kvv = (label) => async () => norm(await sim.locator('.kv', { hasText: label }).first().locator('.kv-value').textContent());
+    const inputs = sim.locator('.sim-in .form-grid').first().locator('input');
+    await inputs.nth(0).fill('0'); await inputs.nth(1).fill('100'); await inputs.nth(2).fill(''); await inputs.nth(3).fill('1');
+    // Rentabilidade é opcional: sem preencher nada, o cálculo usa 0%.
+    await waitText(page, kvv('Em 1 ano'), 'R$ 1.200,00');
+    await waitText(page, kvv('Rendimentos'), 'não considerados (0%)');
+    // 12% a.a. efetivos, R$ 1.000/mês por 10 anos, aporte no fim do mês: referência independente por iteração.
+    await sim.locator('details.advanced summary').click();
+    await sim.locator('details.advanced input').first().fill('12');
+    await inputs.nth(1).fill('1000'); await inputs.nth(3).fill('10');
     const i = Math.pow(1.12, 1 / 12) - 1;
     let v = 0; for (let n = 0; n < 120; n++) v = v * (1 + i) + 100000;
     const expected = norm(new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(Math.round(v) / 100));
-    await waitText(page, () => sim.locator('.kv', { hasText: 'Patrimônio em 10 anos' }).locator('.kv-value').textContent().then(norm), expected);
-    await waitText(page, () => sim.locator('.kv', { hasText: 'Taxa mensal equivalente' }).locator('.kv-value').textContent().then(norm), '0,9489%');
+    await waitText(page, kvv('Em 10 anos'), expected);
+    await waitText(page, kvv('Taxa mensal equivalente'), '0,9489%');
     await noErrors(page);
     await context.close();
   });
@@ -377,8 +393,11 @@ async function run() {
     const tx = await api(page, (repo) => { const t = repo.list('transactions')[0]; return { ok: Boolean(repo.get('categories', t.categoryId)), amount: t.amount }; });
     eq(JSON.stringify(tx), JSON.stringify({ ok: true, amount: 9900 }), 'relacionamento preservado');
     const m = await openForm(page);
-    const opts = await m.locator('select[name=category] option').allTextContents();
+    await m.locator('[data-picker="category"] .picker-btn').click();
+    const opts = await page.locator('.picker-pop .picker-opt').allTextContents();
+    assert(opts.length > 3, 'opções da categoria');
     assert(!opts.some((o) => o.startsWith('Hobby')), 'categoria arquivada não aparece para novos lançamentos');
+    await page.keyboard.press('Escape');
     await noErrors(page);
     await context.close();
   });
@@ -409,7 +428,7 @@ async function run() {
     const loaded = new Set();
     page.on('response', (r) => loaded.add(new URL(r.url()).pathname));
     await page.reload();
-    await page.waitForSelector('.kpis');
+    await page.waitForSelector('.kpi-grid');
     for (const hash of ['#/lancamentos', '#/planejamento/recorrencias', '#/planejamento/programadas', '#/planejamento/parcelamentos', '#/planejamento/orcamentos', '#/investimentos', '#/configuracoes', '#/visao-geral']) {
       await page.goto(`${base}${hash}`);
       await page.waitForSelector('.page-head');
@@ -451,7 +470,7 @@ async function run() {
     }
     await page.goto(`${base}#/visao-geral`);
     await page.screenshot({ path: join(ARTIFACTS, 'mobile.png'), fullPage: true });
-    await page.locator('.tab', { hasText: 'Lançamentos' }).click();
+    await page.locator('.tab[data-route="entries"]').click();
     await page.waitForSelector('#entries-search');
     await page.locator('#entries-search').fill('lanc');
     await waitText(page, '.list-summary span', '1 lançamento');
@@ -485,7 +504,7 @@ async function run() {
       });
     });
     await page.goto(`${base}#/visao-geral`);
-    await page.waitForSelector('.kpis');
+    await page.waitForSelector('.kpi-grid');
     const info = await page.evaluate(async () => {
       const { DB_NAME } = await import('./js/database/schema.js');
       const repo = await import('./js/database/repository.js');
@@ -514,7 +533,7 @@ async function run() {
     });
     await expectKpi(page, 'Sobra projetada', 'R$ 1.500,00');
     await expectKpi(page, 'Disponível para investir', 'R$ 1.300,00');
-    assert(await page.locator('.kv', { hasText: 'Benefícios restritos livres' }).locator('.kv-value', { hasText: 'R$ 200,00' }).count(), 'benefício livre exibido separadamente');
+    assert(await page.locator('.kv', { hasText: 'Benefícios livres' }).locator('.kv-value', { hasText: 'R$ 200,00' }).count(), 'benefício livre exibido separadamente');
     const isRestricted = await api(page, (repo) => repo.list('transactions').find((t) => t.description === 'VA').restricted);
     eq(isRestricted, true, 'receita em conta de benefício marcada como restrita');
     await noErrors(page);
@@ -632,7 +651,7 @@ async function run() {
         await btn.click({ timeout: 2000 }).catch(() => {});
         clicked++;
         await page.waitForTimeout(40);
-        for (let k = 0; k < 3 && (await page.locator('.modal, .menu, .calc.is-open').count()); k++) {
+        for (let k = 0; k < 3 && (await page.locator('.modal, .menu, .calc.is-open, .picker-pop').count()); k++) {
           await page.keyboard.press('Escape');
           await page.waitForTimeout(200);
           if (await page.locator('.modal', { hasText: 'Descartar alterações?' }).count()) await page.getByRole('button', { name: 'Descartar' }).click();
@@ -660,7 +679,7 @@ async function run() {
     });
     const t0 = Date.now();
     await page.reload();
-    await page.waitForSelector('.kpis');
+    await page.waitForSelector('.kpi-grid');
     await page.waitForSelector('.tx-row');
     const load = Date.now() - t0;
     const t1 = Date.now();
@@ -679,6 +698,395 @@ async function run() {
     await context.close();
   });
 
+
+  // ——————————————— Fluxo 2.0 ———————————————
+
+  await test('2.0 — identidade Fluxo, menu com seção selecionada evidente e menu recolhível persistente', async () => {
+    const { context, page } = await newPage();
+    eq(await page.title(), 'Visão geral · Fluxo', 'título');
+    eq(norm(await page.locator('.brand-name').textContent()), 'Fluxo', 'marca');
+    const current = page.locator('.nav-link[aria-current="page"]');
+    eq(norm(await current.textContent()).replace(/\d$/, ''), 'Visão geral', 'item selecionado');
+    const bg = await current.evaluate((el) => getComputedStyle(el).backgroundColor);
+    const bgOther = await page.locator('.nav-link:not([aria-current])').first().evaluate((el) => getComputedStyle(el).backgroundColor);
+    assert(bg !== bgOther, 'seção selecionada tem superfície própria');
+    const indicator = await current.evaluate((el) => getComputedStyle(el, '::before').width);
+    eq(indicator, '3px', 'indicador lateral');
+    await page.locator('[data-action="collapse"]').click();
+    await page.waitForFunction(() => document.documentElement.classList.contains('sidebar-collapsed'));
+    await page.locator('.nav-link[data-route="entries"]').hover();
+    await waitText(page, '.tooltip', 'Lançamentos');
+    await page.reload();
+    await page.waitForSelector('.kpi-grid');
+    assert(await page.evaluate(() => document.documentElement.classList.contains('sidebar-collapsed')), 'preferência persistida');
+    const w = await page.locator('.sidebar').evaluate((el) => el.getBoundingClientRect().width);
+    assert(w < 80, `menu recolhido estreito (${w}px)`);
+    eq(await page.locator('[data-action="new-entry"]').count(), 1, 'uma única ação global de novo lançamento no desktop');
+    await noErrors(page);
+    await context.close();
+  });
+
+  await test('2.0 — calendário: eventos por dia, painel do dia, lançamento na data e ano bissexto', async () => {
+    const { context, page } = await newPage();
+    await api(page, async (repo) => {
+      const c = await repo.createNamed('accounts', { name: 'Conta', kind: 'checking' });
+      const k = await repo.createNamed('accounts', { name: 'Cartão', kind: 'credit', closingDay: 3, dueDay: 10 });
+      await repo.saveRecurrence({ type: 'expense', description: 'Internet', amount: 10000, frequency: 'monthly', startDate: '2026-01-15', sourceId: c.id });
+      await repo.saveTransaction({ type: 'income', status: 'done', amount: 300000, date: '2026-11-05', description: 'Salário', sourceId: c.id });
+      await repo.saveTransaction({ type: 'expense', status: 'done', amount: 20000, date: '2026-10-20', description: 'Tênis', sourceId: k.id });
+    });
+    await page.goto(`${base}#/planejamento/calendario`);
+    await page.waitForSelector('.cal-grid');
+    eq(await page.locator('.cal-day[data-date]').count(), 30, 'novembro tem 30 dias');
+    await page.locator('.cal-day[data-date="2026-11-15"]').click();
+    await waitText(page, '#day-panel .tx-desc', /Internet/);
+    await page.locator('.cal-day[data-date="2026-11-10"]').click();
+    await waitText(page, '#day-panel', /Fatura Cartão/);
+    await page.locator('.cal-day[data-date="2026-11-05"]').click();
+    await waitText(page, '#day-panel .day-totals', /R\$ 3\.000,00/);
+    await page.locator('#day-panel').getByRole('button', { name: 'Lançar neste dia' }).click();
+    eq(await page.locator('.entry-modal input[name=date]').inputValue(), '2026-11-05', 'data pré-preenchida');
+    await page.keyboard.press('Escape');
+    await page.waitForSelector('.entry-modal', { state: 'detached' });
+    await page.evaluate(async () => { const st = await import('./js/state.js'); st.setMonth('2028-02'); });
+    await page.waitForSelector('.cal-day[data-date="2028-02-29"]');
+    eq(await page.locator('.cal-day[data-date]').count(), 29, 'fevereiro bissexto');
+    await noErrors(page);
+    await context.close();
+  });
+
+  await test('2.0 — próximos vencimentos na visão geral (atrasado, fatura e conta fixa)', async () => {
+    const { context, page } = await newPage();
+    await api(page, async (repo) => {
+      const k = await repo.createNamed('accounts', { name: 'Nubank', kind: 'credit', closingDay: 3, dueDay: 10 });
+      await repo.saveTransaction({ type: 'expense', status: 'done', amount: 78000, date: '2026-11-20', description: 'Compra', sourceId: k.id });
+      await repo.saveTransaction({ type: 'expense', status: 'planned', amount: 5000, date: '2026-11-20', description: 'Boleto esquecido' });
+      await repo.saveRecurrence({ type: 'expense', description: 'Plano de saúde', amount: 7990, frequency: 'monthly', startDate: '2026-12-15' });
+    });
+    const panelUp = page.locator('.panel', { has: page.locator('h2', { hasText: 'Próximos vencimentos' }) });
+    await waitText(page, async () => norm(await panelUp.locator('.up-row').first().textContent()), /Boleto esquecido.*Atrasado/);
+    const txt = norm(await panelUp.textContent());
+    assert(/Fatura Nubank.*R\$ 780,00/.test(txt), 'fatura de dezembro listada');
+    assert(/Plano de saúde.*R\$ 79,90/.test(txt), 'conta fixa listada');
+    await noErrors(page);
+    await context.close();
+  });
+
+  await test('2.0 — projeção de longo prazo: horizontes 3 a 60 meses, personalizado e compromissos que terminam', async () => {
+    const { context, page } = await newPage();
+    await api(page, async (repo) => {
+      await repo.saveRecurrence({ type: 'income', description: 'Salário', amount: 300000, frequency: 'monthly', startDate: '2026-01-05' });
+      await repo.createInstallmentPlan({ description: 'Moto', total: 2400000, count: 24, purchaseDate: '2026-11-02', firstMonth: '2026-11' });
+    });
+    await page.goto(`${base}#/planejamento/projecao`);
+    await page.waitForSelector('.horizon');
+    await page.locator('.horizon .seg', { hasText: '5 anos' }).click();
+    await page.waitForFunction(() => document.querySelectorAll('.table tbody tr').length === 60);
+    await page.locator('.horizon .seg', { hasText: '3 meses' }).click();
+    await page.waitForFunction(() => document.querySelectorAll('.table tbody tr').length === 3);
+    await page.locator('.horizon input').fill('30');
+    await page.locator('.horizon input').press('Enter');
+    await page.locator('.horizon input').blur();
+    await page.waitForFunction(() => document.querySelectorAll('.table tbody tr').length === 30);
+    await waitText(page, '.ending', /Moto.*\+R\$ 1\.000,00\/mês.*outubro de 2028.*novembro de 2028/);
+    assert(await page.locator('.note.is-warn', { hasText: 'não inclui despesas variáveis' }).count(), 'aviso de projeção incompleta');
+    eq(await api(page, (repo) => repo.list('transactions').length), 24, 'consultar não cria registros');
+    await noErrors(page);
+    await context.close();
+  });
+
+  await test('2.0 — simulação de decisões compara cenários e descarta sem alterar registros', async () => {
+    const { context, page } = await newPage();
+    await api(page, async (repo) => {
+      await repo.saveRecurrence({ type: 'income', description: 'Salário', amount: 300000, frequency: 'monthly', startDate: '2026-01-05' });
+      await repo.saveRecurrence({ type: 'expense', description: 'Streaming', amount: 5000, frequency: 'monthly', startDate: '2026-01-10' });
+    });
+    const before = await api(page, (repo) => JSON.stringify(repo.snapshot()));
+    await page.goto(`${base}#/planejamento/simulacoes`);
+    await page.locator('.horizon .seg', { hasText: '1 ano' }).click();
+    await page.locator('.adj-builder select').first().selectOption('cancelRecurrence');
+    await page.locator('.adj-builder .form-grid .field', { hasText: 'Conta recorrente' }).locator('select').selectOption({ label: 'Streaming · R$ 50,00' });
+    await page.getByRole('button', { name: 'Adicionar ao cenário' }).click();
+    await waitText(page, () => page.locator('.cal-stat', { hasText: 'diferença no período' }).locator('b').textContent().then(norm), '+R$ 550,00');
+    await page.locator('.adj-builder select').first().selectOption('installment');
+    await page.locator('.adj-builder .form-grid .field', { hasText: 'Valor total' }).locator('input').fill('1200');
+    await page.locator('.adj-builder .form-grid .field', { hasText: 'Parcelas' }).locator('input').fill('12');
+    await page.getByRole('button', { name: 'Adicionar ao cenário' }).click();
+    await waitText(page, () => page.locator('.cal-stat', { hasText: 'diferença no período' }).locator('b').textContent().then(norm), '−R$ 550,00'.replace('−', '-'));
+    eq(await page.locator('.adj').count(), 2, 'dois ajustes');
+    await page.getByRole('button', { name: 'Descartar simulação' }).click();
+    await waitText(page, () => page.locator('.cal-stat', { hasText: 'diferença no período' }).locator('b').textContent().then(norm), 'R$ 0,00');
+    eq(await api(page, (repo) => JSON.stringify(repo.snapshot())), before, 'base financeira intacta');
+    await noErrors(page);
+    await context.close();
+  });
+
+  await test('2.0 — meta sem rentabilidade: entrada da moto em 12 meses; usar sobra mensal', async () => {
+    const { context, page } = await newPage();
+    await api(page, (repo) => repo.saveTransaction({ type: 'income', status: 'done', amount: 90000, date: '2026-11-05', description: 'Renda' }));
+    await page.goto(`${base}#/investimentos`);
+    await page.getByRole('button', { name: 'Nova meta' }).click();
+    const m = page.locator('.modal');
+    await m.locator('.field', { hasText: 'Nome da meta' }).locator('input').fill('Entrada da moto');
+    await m.locator('.field', { hasText: 'Valor desejado' }).locator('input').fill('20000');
+    await m.locator('.field', { hasText: 'Valor que já tenho' }).locator('input').fill('8000');
+    await m.locator('.field', { hasText: 'Quanto consigo guardar' }).locator('input').fill('1000');
+    await waitText(page, () => m.locator('.banner').textContent().then(norm), /Falta R\$ 12\.000,00 · 40% concluído.*novembro de 2027 \(1 ano de aportes\)/);
+    await m.locator('.chip', { hasText: 'Usar sobra mensal' }).click();
+    eq(await m.locator('.field', { hasText: 'Quanto consigo guardar' }).locator('input').inputValue(), '900,00', 'sobra mensal como referência');
+    await m.locator('.field', { hasText: 'Quanto consigo guardar' }).locator('input').fill('1000');
+    await m.getByRole('button', { name: 'Criar meta' }).click();
+    await m.waitFor({ state: 'detached' });
+    const card = page.locator('.goal-card', { hasText: 'Entrada da moto' });
+    await waitText(page, () => card.locator('.goal-forecast').textContent().then(norm), 'Conclusão em novembro de 2027 · 1 ano');
+    assert(/40%.*R\$ 12\.000,00.*R\$ 1\.000,00/.test(norm(await card.locator('.goal-stats').textContent())), 'estatísticas da meta');
+    const g = await api(page, (repo) => repo.list('goals')[0]);
+    eq(g.annualRate, null, 'rentabilidade não exigida');
+    eq(await api(page, (repo) => repo.list('investmentEvents').length), 0, 'nenhum investimento registrado automaticamente');
+    await noErrors(page);
+    await context.close();
+  });
+
+  await test('2.0 — duplicidades: aviso sem bloquear, registro legítimo e recorrência prevista', async () => {
+    const { context, page } = await newPage();
+    await api(page, async (repo) => {
+      const c = await repo.createNamed('accounts', { name: 'Conta Nubank', kind: 'checking' });
+      await repo.saveTransaction({ type: 'expense', status: 'done', amount: 10000, date: '2026-11-25', description: 'Internet', sourceId: c.id });
+      await repo.saveRecurrence({ type: 'expense', description: 'Plano de saúde', amount: 7990, frequency: 'monthly', startDate: '2026-01-20', sourceId: c.id });
+    });
+    let m = await openForm(page);
+    await m.locator('input[name=amount]').fill('100');
+    await m.locator('input[name=description]').fill('Internet');
+    await pick(m, 'source', 'Conta Nubank');
+    await m.locator('.modal-foot button[type=submit]').click();
+    await waitText(page, '.banner-warn', /Encontramos um lançamento semelhante/);
+    eq(await api(page, (repo) => repo.list('transactions').length), 1, 'nada salvo antes da decisão');
+    await m.getByRole('button', { name: 'Registrar mesmo assim' }).click();
+    await m.waitFor({ state: 'detached' });
+    eq(await api(page, (repo) => repo.list('transactions').filter((t) => t.description === 'Internet').length), 2, 'lançamento legítimo registrado');
+    m = await openForm(page);
+    await m.locator('input[name=amount]').fill('79,90');
+    await m.locator('input[name=description]').fill('Plano de saúde');
+    await m.locator('input[name=date]').fill('2026-11-20');
+    await m.locator('.modal-foot button[type=submit]').click();
+    await waitText(page, '.banner-warn', /conta recorrente já prevista/);
+    await m.getByRole('button', { name: /Marcar “Plano de saúde” como paga/ }).click();
+    await m.waitFor({ state: 'detached' });
+    const occ = await api(page, (repo) => repo.list('transactions').filter((t) => t.description === 'Plano de saúde').map((t) => [t.status, Boolean(t.recurrenceId), t.occurrenceDate]));
+    eq(JSON.stringify(occ), JSON.stringify([['done', true, '2026-11-20']]), 'ocorrência marcada como paga, sem duplicar');
+    await expectKpi(page, 'Compromissos pendentes', 'R$ 0,00');
+    await noErrors(page);
+    await context.close();
+  });
+
+  await test('2.0 — clique duplo e envio repetido não duplicam lançamentos', async () => {
+    const { context, page } = await newPage();
+    const m = await openForm(page);
+    await m.locator('input[name=amount]').fill('55');
+    await m.locator('input[name=description]').fill('Lanche');
+    await m.locator('.modal-foot button[type=submit]').dblclick();
+    await page.keyboard.press('Control+Enter').catch(() => {});
+    await m.waitFor({ state: 'detached' });
+    await page.waitForTimeout(300);
+    eq(await api(page, (repo) => repo.list('transactions').length), 1, 'exatamente um registro');
+    await noErrors(page);
+    await context.close();
+  });
+
+  await test('2.0 — seletor pesquisável: busca, recentes e criação com seleção automática', async () => {
+    const { context, page } = await newPage();
+    await api(page, (repo) => repo.saveTransaction({ type: 'expense', status: 'done', amount: 1000, date: '2026-11-01', description: 'X', categoryId: repo.list('categories').find((c) => c.name === 'Lazer').id }));
+    const m = await openForm(page);
+    await m.locator('[data-picker="category"] .picker-btn').click();
+    const groups = await page.locator('.picker-pop .picker-group').allTextContents();
+    assert(groups.includes('Recentes'), 'grupo de recentes');
+    await page.locator('.picker-pop input').fill('saú');
+    eq(norm(await page.locator('.picker-pop .picker-opt').first().textContent()), 'Saúde', 'busca sem acento');
+    await page.locator('.picker-pop input').fill('Pets');
+    await page.locator('.picker-pop input').press('Enter');
+    await page.waitForFunction(() => document.querySelector('[data-picker="category"] .picker-value').textContent === 'Pets');
+    eq(await api(page, (repo) => repo.list('categories').filter((c) => c.name === 'Pets').length), 1, 'categoria criada');
+    await m.locator('input[name=amount]').fill('30');
+    await save(m);
+    const t = await api(page, (repo) => { const x = repo.list('transactions').find((y) => y.amount === 3000); return repo.get('categories', x.categoryId).name; });
+    eq(t, 'Pets', 'lançamento com a nova categoria');
+    await noErrors(page);
+    await context.close();
+  });
+
+  await test('2.0 — sugestão do histórico preenche só o que não foi escolhido manualmente', async () => {
+    const { context, page } = await newPage();
+    await api(page, async (repo) => {
+      const c = await repo.createNamed('accounts', { name: 'Conta Nubank', kind: 'checking' });
+      await repo.createNamed('accounts', { name: 'Banco do Brasil', kind: 'checking' });
+      const b = await repo.createNamed('blocks', { name: 'Casa' });
+      await repo.saveTransaction({ type: 'expense', status: 'done', amount: 10000, date: '2026-10-05', description: 'Internet', sourceId: c.id, blockId: b.id, categoryId: repo.list('categories').find((x) => x.name === 'Assinaturas').id });
+    });
+    const m = await openForm(page);
+    await pick(m, 'source', 'Banco do Brasil');
+    await m.locator('input[name=description]').fill('Inter');
+    await page.locator('.suggest-item').first().click();
+    await waitText(page, () => m.locator('[data-picker="category"] .picker-value').textContent().then(norm), 'Assinaturas');
+    eq(norm(await m.locator('[data-picker="block"] .picker-value').textContent()), 'Casa', 'bloco sugerido');
+    eq(norm(await m.locator('[data-picker="source"] .picker-value').textContent()), 'Banco do Brasil', 'escolha manual preservada');
+    assert(await m.locator('.suggest-note').isVisible(), 'sugestão sinalizada');
+    await noErrors(page);
+    await page.keyboard.press('Escape');
+    await context.close();
+  });
+
+  await test('2.0 — painel contextual por bloco lista gastos e leva a Lançamentos filtrado', async () => {
+    const { context, page } = await newPage();
+    await api(page, async (repo) => {
+      const b = await repo.createNamed('blocks', { name: 'Namorada' });
+      await repo.saveTransaction({ type: 'expense', status: 'done', amount: 12990, date: '2026-11-25', description: 'Jantar Figueiredo', blockId: b.id });
+      await repo.saveTransaction({ type: 'expense', status: 'done', amount: 5000, date: '2026-11-12', description: 'Cinema', blockId: b.id });
+      await repo.saveTransaction({ type: 'expense', status: 'done', amount: 7000, date: '2026-11-12', description: 'Mercado' });
+    });
+    await page.locator('.panel', { has: page.locator('h2', { hasText: 'Por bloco' }) }).locator('.bar-row', { hasText: 'Namorada' }).click();
+    const drawer = page.locator('.modal-root.is-drawer');
+    await drawer.waitFor();
+    await waitText(page, () => drawer.locator('.kv', { hasText: 'Total no mês' }).locator('.kv-value').textContent().then(norm), 'R$ 179,90');
+    eq(await drawer.locator('.tx-row').count(), 2, 'somente os gastos do bloco');
+    await drawer.getByRole('button', { name: 'Abrir em Lançamentos' }).click();
+    await page.waitForURL(/#\/lancamentos/);
+    await waitText(page, '.list-summary span', '2 lançamentos');
+    await noErrors(page);
+    await context.close();
+  });
+
+  await test('2.0 — integridade: auditoria lista duplicidades e referências sem alterar dados', async () => {
+    const { context, page } = await newPage();
+    await page.evaluate(async () => {
+      const db = await import('./js/database/db.js');
+      const base = { type: 'expense', status: 'done', amount: 500, date: '2026-11-01', month: '2026-11', description: 'Mercado', categoryId: null, blockId: null, sourceId: null };
+      await db.commit([{ store: 'transactions', put: { ...base, id: 'd1' } }, { store: 'transactions', put: { ...base, id: 'd2' } }, { store: 'transactions', put: { ...base, id: 'o1', categoryId: 'apagada', description: 'Órfão' } }]);
+    });
+    await page.reload();
+    await page.goto(`${base}#/configuracoes/integridade`);
+    const box = page.locator('#cfg-integridade');
+    await waitText(page, () => box.textContent().then(norm), /^(?=.*Possível duplicidade)(?=.*Referência inválida)/);
+    eq(await api(page, (repo) => repo.list('transactions').length), 3, 'nada excluído');
+    await box.locator('.audit-item', { hasText: 'Referência inválida' }).getByRole('button', { name: 'Abrir' }).click();
+    await page.waitForSelector('.entry-modal');
+    await noErrors(page);
+    await context.close();
+  });
+
+  await test('2.0 — compatibilidade: base e backup da versão 1.0 abrem no Fluxo 2.0', async () => {
+    const { context, page } = await newPage();
+    // Base gravada como a v1 gravava (mesmo banco, esquema v2, metas com rentabilidade obrigatória).
+    await page.goto(`${base}manifest.webmanifest`);
+    await page.evaluate(async () => {
+      const { DB_NAME, MIGRATIONS } = await import('./js/database/schema.js');
+      await new Promise((ok) => { const d = indexedDB.deleteDatabase(DB_NAME); d.onsuccess = ok; d.onerror = ok; });
+      await new Promise((ok, fail) => {
+        const req = indexedDB.open(DB_NAME, 2);
+        req.onupgradeneeded = () => { MIGRATIONS[1](req.result, req.transaction); MIGRATIONS[2](req.result, req.transaction); };
+        req.onsuccess = () => {
+          const db = req.result;
+          const tx = db.transaction(['transactions', 'goals', 'meta', 'categories'], 'readwrite');
+          tx.objectStore('categories').put({ id: 'cat1', name: 'Alimentação', type: 'expense', archived: false });
+          tx.objectStore('transactions').put({ id: 'v1tx', type: 'expense', status: 'done', description: 'Mercado antigo', amount: 25000, date: '2026-11-03', month: '2026-11', categoryId: 'cat1', blockId: null, sourceId: null, createdAt: 1 });
+          tx.objectStore('goals').put({ id: 'v1goal', name: 'Reserva', target: 1000000, initial: 100000, monthly: 50000, annualRate: 10, startMonth: '2026-11', deadline: null, timing: 'end', investmentId: null });
+          tx.objectStore('meta').put({ key: 'seeded', value: true });
+          tx.objectStore('meta').put({ key: 'prefs', value: { safetyMargin: 10000 } });
+          tx.oncomplete = () => { db.close(); ok(); };
+          tx.onerror = () => fail(tx.error);
+        };
+      });
+    });
+    await page.goto(`${base}#/visao-geral`);
+    await page.waitForSelector('.kpi-grid');
+    eq(await barValue(page, 'Por categoria', 'Alimentação'), 'R$ 250,00', 'lançamento antigo exibido');
+    await page.goto(`${base}#/investimentos`);
+    await waitText(page, () => page.locator('.goal-card', { hasText: 'Reserva' }).locator('.goal-forecast').textContent().then(norm), /Conclusão em .*estimativa com rentabilidade/);
+    eq(await api(page, (repo) => repo.prefs().safetyMargin), 10000, 'preferências preservadas');
+    // Backup da v1 (formato 1) restaura normalmente.
+    const v1 = { format: 'guia-financeiro-backup', version: 1, schemaVersion: 2, appVersion: '1.0.0', exportedAt: '2026-11-20T10:00:00.000Z', data: { transactions: [{ id: 'b1', type: 'income', status: 'done', description: 'Salário', amount: 300000, date: '2026-11-05', month: '2026-11', categoryId: null, blockId: null, sourceId: null }], categories: [], blocks: [], accounts: [], recurrences: [], installmentPlans: [], budgets: [], investments: [], investmentEvents: [], goals: [{ id: 'g', name: 'Viagem', target: 500000, initial: 0, monthly: 50000, annualRate: 0, startMonth: '2026-11', timing: 'end' }], meta: [{ key: 'seeded', value: true }] } };
+    const path = join(ARTIFACTS, 'backup-v1.json');
+    await writeFile(path, JSON.stringify(v1));
+    await page.goto(`${base}#/configuracoes/dados`);
+    const [chooser] = await Promise.all([page.waitForEvent('filechooser'), page.getByRole('button', { name: 'Restaurar backup' }).click()]);
+    await chooser.setFiles(path);
+    await page.getByRole('button', { name: 'Restaurar', exact: true }).click();
+    await waitText(page, '.toast:last-child', /Backup restaurado/);
+    eq(await api(page, (repo) => repo.list('goals')[0].name), 'Viagem', 'backup v1 restaurado');
+    await noErrors(page);
+    await context.close();
+  });
+
+  await test('2.0 — persistência após fechar e reabrir o navegador (mesmo perfil)', async () => {
+    const { context, page } = await newPage();
+    await api(page, (repo) => repo.saveTransaction({ type: 'expense', status: 'done', amount: 4321, date: '2026-11-10', description: 'Persistente' }));
+    await page.close();
+    const again = await context.newPage();
+    await again.goto(base);
+    await again.waitForSelector('.kpi-grid');
+    await expectKpi(again, 'Despesas realizadas', 'R$ 43,21');
+    await context.close();
+  });
+
+  await test('2.0 — movimento reduzido: interface continua funcional', async () => {
+    const { context, page } = await newPage({ reducedMotion: 'reduce' });
+    const m = await openForm(page);
+    await m.locator('input[name=amount]').fill('12');
+    await save(m);
+    await expectKpi(page, 'Despesas realizadas', 'R$ 12,00');
+    await page.goto(`${base}#/configuracoes`);
+    await page.locator('.settings-row', { hasText: 'Animações' }).locator('.seg', { hasText: 'Reduzidas' }).click();
+    eq(await page.evaluate(() => document.documentElement.dataset.motion), 'reduced', 'preferência aplicada');
+    await page.goto(`${base}#/planejamento/calendario`);
+    await page.waitForSelector('.cal-grid');
+    await noErrors(page);
+    await context.close();
+  });
+
+  await test('2.0 — resoluções: 1366×768, 1920×1080, 2560×1440, ultrawide, tablet e celular sem rolagem horizontal', async () => {
+    const sizes = [[1366, 768], [1920, 1080], [2560, 1440], [3440, 1440], [820, 1180], [390, 844]];
+    for (const [w, hgt] of sizes) {
+      const { context, page } = await newPage({ viewport: { width: w, height: hgt }, isMobile: w < 500, hasTouch: w < 900 });
+      await api(page, async (repo) => {
+        const b = await repo.createNamed('blocks', { name: 'Pessoal' });
+        for (let i = 1; i <= 12; i++) await repo.saveTransaction({ type: i % 4 ? 'expense' : 'income', status: i > 8 ? 'planned' : 'done', amount: 1000 * i, date: `2026-11-${String(i * 2).padStart(2, '0')}`, description: `Item ${i}`, blockId: b.id });
+      });
+      for (const hash of ['#/visao-geral', '#/lancamentos', '#/planejamento/calendario', '#/planejamento/projecao', '#/investimentos', '#/configuracoes']) {
+        await page.goto(`${base}${hash}`);
+        await page.waitForSelector('.page-head');
+        await page.waitForTimeout(120);
+        const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+        assert(overflow <= 0, `rolagem horizontal em ${w}×${hgt} ${hash}: ${overflow}px`);
+      }
+      await page.goto(`${base}#/visao-geral`);
+      await page.waitForTimeout(300);
+      await page.screenshot({ path: join(ARTIFACTS, `res-${w}x${hgt}.png`), fullPage: false });
+      await noErrors(page);
+      await context.close();
+    }
+  });
+
+  await test('2.0 — carga em duas fases: histórico antigo aparece, entra em saldos e no backup', async () => {
+    const { context, page } = await newPage();
+    await api(page, async (repo) => {
+      const c = await repo.createNamed('accounts', { name: 'Conta', kind: 'checking' });
+      await repo.saveTransaction({ type: 'income', status: 'done', amount: 100000, date: '2023-01-10', description: 'Antigo', sourceId: c.id });
+      await repo.saveTransaction({ type: 'expense', status: 'done', amount: 2500, date: '2026-11-10', description: 'Recente', sourceId: c.id });
+    });
+    await page.reload();
+    await page.waitForSelector('.kpi-grid');
+    await api(page, (repo) => repo.whenFullyLoaded());
+    await waitText(page, () => page.locator('.kv', { hasText: 'Saldo em contas hoje' }).locator('.kv-value').textContent().then(norm), 'R$ 975,00');
+    await page.evaluate(async () => { const st = await import('./js/state.js'); st.setMonth('2023-01'); });
+    await expectKpi(page, 'Receitas recebidas', 'R$ 1.000,00');
+    await page.goto(`${base}#/configuracoes/dados`);
+    const [dl] = await Promise.all([page.waitForEvent('download'), page.getByRole('button', { name: 'Exportar backup (JSON)' }).click()]);
+    const file = join(ARTIFACTS, 'backup-duas-fases.json');
+    await dl.saveAs(file);
+    const b = JSON.parse(await readFile(file, 'utf8'));
+    eq(b.data.transactions.length, 2, 'backup contém o histórico completo');
+    await noErrors(page);
+    await context.close();
+  });
   await browser.close();
   server.close();
   const failed = results.filter((r) => !r.ok);

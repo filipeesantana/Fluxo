@@ -75,6 +75,43 @@ export async function loadAll() {
   return out;
 }
 
+/**
+ * Carga em duas fases (consulta indexada por competência):
+ * loadRecent traz todas as coleções pequenas e só as movimentações com
+ * competência >= cutoff; loadOlder traz o restante do histórico.
+ */
+export async function loadRecent(cutoff) {
+  const out = {};
+  await withTx(STORES, 'readonly', (s) => {
+    for (const name of STORES) {
+      const req = name === 'transactions' ? s[name].index('month').getAll(IDBKeyRange.lowerBound(cutoff)) : s[name].getAll();
+      req.onsuccess = () => { out[name] = req.result; };
+    }
+  });
+  return out;
+}
+
+export async function loadOlder(cutoff) {
+  let rows = [];
+  await withTx(['transactions'], 'readonly', (s) => {
+    const req = s.transactions.index('month').getAll(IDBKeyRange.upperBound(cutoff, true));
+    req.onsuccess = () => { rows = req.result; };
+  });
+  return rows;
+}
+
+/** Lê registros específicos (sincronização incremental entre abas). */
+export async function getByKeys(store, keys) {
+  const out = new Map();
+  await withTx([store], 'readonly', (s) => {
+    for (const k of keys) {
+      const req = s[store].get(k);
+      req.onsuccess = () => out.set(k, req.result);
+    }
+  });
+  return out;
+}
+
 /** Grava/remove um conjunto de alterações atomicamente. ops: [{store, put|del}] */
 export function commit(ops) {
   const names = [...new Set(ops.map((o) => o.store))];

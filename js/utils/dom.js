@@ -29,7 +29,7 @@ function applyAttrs(el, attrs) {
   for (const [k, v] of Object.entries(attrs)) {
     if (v === false || v == null) continue;
     if (k === 'class') el.className = Array.isArray(v) ? v.filter(Boolean).join(' ') : v;
-    else if (k === 'style' && typeof v === 'object') Object.assign(el.style, v);
+    else if (k === 'style' && typeof v === 'object') { for (const [sk, sv] of Object.entries(v)) { if (sk.startsWith('--')) el.style.setProperty(sk, sv); else el.style[sk] = sv; } }
     else if (k === 'dataset') Object.assign(el.dataset, v);
     else if (k.startsWith('on') && typeof v === 'function') el.addEventListener(k.slice(2).toLowerCase(), v);
     else if (k === 'value') el.value = v;
@@ -79,7 +79,7 @@ export function focusFirst(container) {
 export const FOCUSABLE = 'a[href], button:not([disabled]), input:not([disabled]):not([type=hidden]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
 export function prefersReducedMotion() {
-  return window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  return document.documentElement.dataset.motion === 'reduced' || window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 }
 
 /** Anima um número de `from` até `to` (centavos) chamando render a cada quadro. */

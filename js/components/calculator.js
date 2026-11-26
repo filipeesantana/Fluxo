@@ -46,7 +46,7 @@ function build() {
     ['%', '%', 'k-fn'], ['0'], [',', ','], ['⌫', 'back', 'k-fn'],
   ];
   const pad = h('div', { class: 'calc-pad' }, ...keys.map(([label, val = label, cls = '']) =>
-    h('button', { class: `calc-key ${cls}`, type: 'button', tabindex: '-1', 'aria-label': val === 'back' ? 'Apagar' : val === 'clear' ? 'Limpar' : label, onclick: () => press(val) }, label)));
+    h('button', { class: `calc-key ${cls}`, type: 'button', tabindex: '-1', dataset: { v: val }, 'aria-label': val === 'back' ? 'Apagar' : val === 'clear' ? 'Limpar' : label, onclick: () => press(val) }, label)));
   const eq = h('button', { class: 'calc-key k-eq', type: 'button', tabindex: '-1', onclick: () => commitEval() }, '=');
   pad.append(eq);
 
@@ -95,7 +95,7 @@ function build() {
   }
   function renderHistory() {
     const items = readHistory();
-    put(history, ...items.map((it) => h('button', { class: 'calc-hist-item', type: 'button', onclick: () => { expr.value = String(it.v).replace('.', ','); preview(); expr.focus(); } },
+    put(history, items.length ? h('div', { class: 'calc-hist-title' }, 'Histórico') : null, ...items.map((it) => h('button', { class: 'calc-hist-item', type: 'button', onclick: () => { expr.value = String(it.v).replace('.', ','); preview(); expr.focus(); } },
       h('span', { class: 'faint truncate' }, it.e), h('span', { class: 'num' }, formatResult(it.v)))));
     history.hidden = !items.length;
   }
@@ -118,6 +118,16 @@ function build() {
     setTimeout(() => t.classList.remove('flash'), 600);
   }
 
+  // Feedback visual da tecla correspondente ao digitar no teclado físico.
+  const keyFor = { '*': '*', x: '*', X: '*', '/': '/', '+': '+', '-': '-', '%': '%', '(': '(', ')': ')', ',': ',', '.': ',', Backspace: 'back', Enter: '=' };
+  expr.addEventListener('keydown', (ev) => {
+    const v = /^[0-9]$/.test(ev.key) ? ev.key : keyFor[ev.key];
+    if (!v) return;
+    const btn = [...pad.querySelectorAll('.calc-key')].find((b) => (v === '=' ? b.classList.contains('k-eq') : b.dataset.v === v));
+    if (!btn) return;
+    btn.classList.add('is-pressed');
+    setTimeout(() => btn.classList.remove('is-pressed'), 110);
+  });
   expr.addEventListener('beforeinput', (ev) => {
     if (ev.data && [...ev.data].some((c) => !ALLOWED.test(c) && c.toLowerCase() !== 'x')) ev.preventDefault();
   });

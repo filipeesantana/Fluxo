@@ -1,10 +1,10 @@
-import { openDB, loadAll, commit, replaceAll, requestPersistence, setVersionChangeHandler } from './db.js';
+import { openDB, loadAll, loadRecent, loadOlder, getByKeys, commit, replaceAll, requestPersistence, setVersionChangeHandler } from './db.js';
 import { STORES } from './schema.js';
 import { VALIDATORS, normalizeName, sameName } from '../services/validation.js';
 import { competenceOf, isCard, billFor } from '../services/cards.js';
 import { buildInstallments } from '../services/installments.js';
 import { createContext } from '../services/finance.js';
-import { today, addDays, currentMonth, monthOf } from '../utils/dates.js';
+import { today, addDays, currentMonth, monthOf, addMonths } from '../utils/dates.js';
 import { uid } from '../utils/dom.js';
 
 const DEFAULT_CATEGORIES = {
@@ -34,24 +34,60 @@ function setMemory(rows) {
   for (const [store, row] of rows) data[store].set(keyOf(store, row), row);
 }
 
+let fullyLoaded = false;
+let fullLoad = null;
+
 async function reloadFromDB() {
   const all = await loadAll();
   for (const s of STORES) {
     data[s].clear();
     for (const row of all[s] || []) data[s].set(keyOf(s, row), row);
   }
+  fullyLoaded = true;
 }
+
+/** Indica se o histórico antigo já foi carregado (saldos e exportações dependem disso). */
+export const isFullyLoaded = () => fullyLoaded;
+export function whenFullyLoaded() { return fullyLoaded ? Promise.resolve() : fullLoad; }
 
 export async function init() {
   setVersionChangeHandler(() => {
     for (const fn of listeners) fn('versionchange');
   });
   await openDB();
-  await reloadFromDB();
+  // Fase 1: últimos 13 meses + futuro (o suficiente para abrir a aplicação).
+  const cutoff = addMonths(currentMonth(), -13);
+  const recent = await loadRecent(`${cutoff}`);
+  for (const s of STORES) {
+    data[s].clear();
+    for (const row of recent[s] || []) data[s].set(keyOf(s, row), row);
+  }
+  // Fase 2: histórico antigo em segundo plano; registros já presentes têm precedência.
+  fullLoad = loadOlder(cutoff).then((rows) => {
+    for (const row of rows) if (!data.transactions.has(row.id)) data.transactions.set(row.id, row);
+    fullyLoaded = true;
+    notify('loaded');
+  }).catch(async () => { await reloadFromDB(); notify('loaded'); });
   if (!data.meta.get('seeded')) await seed();
   if (channel) {
-    channel.onmessage = async () => {
-      try { await reloadFromDB(); notify('remote'); } catch { /* aba antiga: ignora */ }
+    channel.onmessage = async (ev) => {
+      try {
+        const msg = ev.data || {};
+        if (msg.t === 'ops' && Array.isArray(msg.ops)) {
+          // Sincronização incremental: relê apenas os registros alterados.
+          const byStore = new Map();
+          for (const o of msg.ops) { if (!byStore.has(o.store)) byStore.set(o.store, []); byStore.get(o.store).push(o.key); }
+          for (const [store, keys] of byStore) {
+            if (!data[store]) continue;
+            const rows = await getByKeys(store, keys);
+            for (const [k, row] of rows) { if (row) data[store].set(k, row); else data[store].delete(k); }
+          }
+        } else {
+          await whenFullyLoaded();
+          await reloadFromDB();
+        }
+        notify('remote');
+      } catch { /* aba antiga: ignora */ }
     };
   }
 }
@@ -82,7 +118,7 @@ async function apply(ops, { broadcast = true } = {}) {
     else data[op.store].delete(op.del);
   }
   notify();
-  if (broadcast) channel?.postMessage({ t: 'changed', at: Date.now() });
+  if (broadcast) channel?.postMessage({ t: 'ops', ops: ops.map((op) => ({ store: op.store, key: op.put ? keyOf(op.store, op.put) : op.del })) });
   if (!data.meta.get('persistAsked')) {
     data.meta.set('persistAsked', { key: 'persistAsked', value: true });
     requestPersistence().then((status) => commit([{ store: 'meta', put: { key: 'persistAsked', value: status } }]).catch(() => {}));
@@ -110,6 +146,7 @@ export function context() {
     prefs: prefs(),
     today: today(),
   });
+  ctxCache.complete = fullyLoaded;
   return ctxCache;
 }
 
@@ -313,8 +350,9 @@ export async function deleteRecurrence(ruleId) {
 export async function createInstallmentPlan(input) {
   const acc = data.accounts.get(input.sourceId);
   const firstMonth = input.firstMonth || (isCard(acc) ? billFor(input.purchaseDate, acc).month : monthOf(input.purchaseDate));
+  if (input.id && data.installmentPlans.has(input.id)) return data.installmentPlans.get(input.id); // idempotente
   const plan = {
-    id: uid(),
+    id: input.id || uid(),
     description: String(input.description || '').trim().slice(0, 200) || 'Compra parcelada',
     total: input.total, count: input.count, purchaseDate: input.purchaseDate, firstMonth,
     sourceId: input.sourceId || null, categoryId: input.categoryId || null, blockId: input.blockId || null,
@@ -326,6 +364,7 @@ export async function createInstallmentPlan(input) {
   for (const p of parcels) {
     const status = isCard(acc) ? 'done' : (input.firstPaid && p.index === 1) || (input.markPastPaid && p.month < cm) ? 'done' : 'planned';
     ops.push({ store: 'transactions', put: normalizeTransaction({
+      id: `${plan.id}-p${p.index}`,
       type: 'expense', status, description: plan.description, amount: p.amount, date: plan.purchaseDate,
       month: p.month, monthManual: true, sourceId: plan.sourceId, categoryId: plan.categoryId, blockId: plan.blockId, method: input.method || null,
       planId: plan.id, installment: { index: p.index, count: p.count },
@@ -486,20 +525,28 @@ export async function setPrefs(patch) {
 }
 
 export function snapshot() {
+  if (!fullyLoaded) throw new Error('O histórico ainda está carregando. Tente novamente em instantes.');
   return Object.fromEntries(STORES.map((s) => [s, list(s)]));
+}
+
+export async function fullSnapshot() {
+  await whenFullyLoaded();
+  return snapshot();
 }
 
 /** Substitui toda a base pelo conteúdo do backup já validado (atômico). */
 export async function importData(backupData) {
   const clean = Object.fromEntries(STORES.map((s) => [s, (backupData[s] || []).map((r) => structuredClone(r))]));
   if (!clean.meta.some((m) => m.key === 'seeded')) clean.meta.push({ key: 'seeded', value: true, at: Date.now() });
+  await whenFullyLoaded();
   await replaceAll(clean);
   await reloadFromDB();
   notify();
-  channel?.postMessage({ t: 'changed', at: Date.now() });
+  channel?.postMessage({ t: 'reload', at: Date.now() });
 }
 
 export async function wipeAll() {
+  await whenFullyLoaded();
   await replaceAll({ meta: [{ key: 'seeded', value: true, at: Date.now() }] });
   await reloadFromDB();
   await seed();

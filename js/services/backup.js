@@ -33,7 +33,7 @@ const REFS = {
 export function validateBackup(obj) {
   const errors = [], warnings = [], counts = {};
   if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return { ok: false, errors: ['O arquivo não contém um objeto JSON.'], warnings, counts };
-  if (obj.format !== BACKUP_FORMAT) errors.push('O arquivo não é um backup do Guia Financeiro.');
+  if (obj.format !== BACKUP_FORMAT) errors.push('O arquivo não é um backup do Fluxo (nem da versão anterior, Guia Financeiro).');
   if (!Number.isInteger(obj.version)) errors.push('Versão do backup ausente.');
   else if (obj.version > BACKUP_VERSION) errors.push(`Backup criado por uma versão mais nova do aplicativo (formato ${obj.version}).`);
   if (Number.isInteger(obj.schemaVersion) && obj.schemaVersion > DB_VERSION) errors.push(`Esquema de dados ${obj.schemaVersion} é mais novo que o suportado (${DB_VERSION}).`);

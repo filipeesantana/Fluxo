@@ -1,12 +1,13 @@
 {
-  "name": "guia-financeiro",
-  "version": "1.0.0",
+  "name": "fluxo",
+  "version": "2.0.0",
   "private": true,
-  "description": "Gerenciador financeiro pessoal local-first. Não precisa de build: publique a raiz no GitHub Pages.",
+  "description": "Fluxo — finanças pessoais local-first. Não precisa de build: publique a raiz no GitHub Pages.",
   "type": "module",
   "scripts": {
     "serve": "node tests/server.mjs",
     "test": "node --test tests/unit/*.test.mjs",
-    "test:e2e": "node tests/e2e/run.mjs"
+    "test:e2e": "node tests/e2e/run.mjs",
+    "test:perf": "node tests/perf/scale.mjs"
   }
 }

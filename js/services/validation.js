@@ -110,7 +110,9 @@ export function validateGoal(g) {
   check(e, posCents(g.target), 'valor desejado inválido');
   check(e, isCents(g.initial || 0) && (g.initial || 0) >= 0, 'patrimônio inicial inválido');
   check(e, isCents(g.monthly || 0) && (g.monthly || 0) >= 0, 'aporte mensal inválido');
-  check(e, typeof (g.annualRate ?? 0) === 'number' && (g.annualRate ?? 0) > -100 && (g.annualRate ?? 0) < 1000, 'rentabilidade inválida');
+  check(e, g.annualRate == null || (typeof g.annualRate === 'number' && g.annualRate > -100 && g.annualRate < 1000), 'rentabilidade inválida');
+  check(e, g.rateMode == null || g.rateMode === 'annual' || g.rateMode === 'monthly', 'tipo de taxa inválido');
+  check(e, g.extras == null || (Array.isArray(g.extras) && g.extras.every((x) => x && isMonth(x.month) && posCents(x.amount))), 'aportes extraordinários inválidos');
   check(e, isMonth(g.startMonth), 'mês inicial inválido');
   check(e, g.deadline == null || isMonth(g.deadline), 'prazo inválido');
   return e;

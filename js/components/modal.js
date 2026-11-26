@@ -14,7 +14,7 @@ function setBackgroundInert(on) {
  * Abre um diálogo modal acessível. A calculadora global fica fora da área
  * inerte para poder ser usada durante o preenchimento.
  */
-export function openModal({ title, body, footer = [], size = 'md', onClose, closeOnScrim = true, className = '' }) {
+export function openModal({ title, body, footer = [], size = 'md', onClose, closeOnScrim = true, className = '', drawer = false }) {
   const opener = document.activeElement;
   const titleId = `m-${Math.random().toString(36).slice(2, 8)}`;
   const closeBtn = h('button', { class: 'btn btn-ghost btn-icon btn-sm', type: 'button', 'aria-label': 'Fechar', onclick: () => close() }, icon('x'));
@@ -24,7 +24,7 @@ export function openModal({ title, body, footer = [], size = 'md', onClose, clos
     footer.length ? h('footer', { class: 'modal-foot' }, footer) : null,
   );
   const scrim = h('div', { class: 'modal-scrim' });
-  const root = h('div', { class: 'modal-root' }, scrim, dialog);
+  const root = h('div', { class: `modal-root${drawer ? ' is-drawer' : ''}` }, scrim, dialog);
   if (closeOnScrim) scrim.addEventListener('pointerdown', () => close());
 
   let closed = false;
@@ -32,7 +32,8 @@ export function openModal({ title, body, footer = [], size = 'md', onClose, clos
 
   function onKey(ev) {
     if (stack[stack.length - 1] !== api) return;
-    if (ev.target.closest?.('.calc')) return;
+    if (ev.target.closest?.('.calc, .picker-pop, .menu')) return;
+    if (ev.key === 'Escape' && document.querySelector('.picker-pop, .menu')) return;
     if (ev.key === 'Escape') { ev.preventDefault(); ev.stopPropagation(); close(); }
     if (ev.key === 'Tab') {
       const items = [...dialog.querySelectorAll(FOCUSABLE)].filter((x) => x.offsetParent !== null);
@@ -53,7 +54,7 @@ export function openModal({ title, body, footer = [], size = 'md', onClose, clos
     if (!stack.length) setBackgroundInert(false);
     root.classList.remove('is-open');
     const done = () => { root.remove(); onClose?.(result); };
-    if (prefersReducedMotion()) done(); else setTimeout(done, 170);
+    if (prefersReducedMotion()) done(); else setTimeout(done, 220);
     if (opener && document.contains(opener)) opener.focus({ preventScroll: true });
   }
 
