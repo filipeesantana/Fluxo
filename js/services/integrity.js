@@ -1,7 +1,7 @@
 import { fold } from './suggest.js';
 import { dayDiff, monthOf, isISODate } from '../utils/dates.js';
 import { monthItems } from './finance.js';
-import { occurrences } from './recurrence.js';
+import { occurrences, ruleOccurrences } from './recurrence.js';
 
 /*
  * Duas coisas diferentes:
@@ -27,11 +27,11 @@ export function findSimilar(candidate, ctx, { limit = 3 } = {}) {
   const pool = [];
   for (const m of new Set([month, candidate.month].filter(Boolean))) pool.push(...(ctx.byMonth.get(m) || []));
   // vizinhos de data na virada de mês
-  for (const t of ctx.transactions) if (Math.abs(dayDiff(t.date, candidate.date)) <= 1 && monthOf(t.date) !== month) pool.push(t);
+  for (const t of ctx.transactions) if (t.date && Math.abs(dayDiff(t.date, candidate.date)) <= 1 && monthOf(t.date) !== month) pool.push(t);
   const seen = new Set();
   const matches = [];
   for (const t of pool) {
-    if (seen.has(t.id) || t.id === candidate.id) continue;
+    if (seen.has(t.id) || t.id === candidate.id || !t.date) continue;
     seen.add(t.id);
     if (!sameKind(t.type, candidate.type) || t.amount !== candidate.amount) continue;
     const dd = Math.abs(dayDiff(t.date, candidate.date));
@@ -100,12 +100,18 @@ export function auditData(data) {
 
   const occ = new Map();
   for (const t of tx) {
-    if (!t.recurrenceId || !t.occurrenceDate) continue;
-    const k = `${t.recurrenceId}|${t.occurrenceDate}`;
-    if (occ.has(k)) add('recurrence', 'error', `Ocorrência duplicada de “${t.description}” em ${t.occurrenceDate}`, [occ.get(k), t.id]);
+    const key = t.occurrenceKey || t.occurrenceDate;
+    if (t.forecastId && !rules.has(t.forecastId)) add('orphan', 'warn', `“${t.description}” aponta para uma previsão mensal inexistente`, [t.id]);
+    if (!t.recurrenceId || !key || t.remainderOf) continue;
+    const k = `${t.recurrenceId}|${key}`;
+    if (occ.has(k)) add('recurrence', 'error', `Ocorrência duplicada de “${t.description}” (${key})`, [occ.get(k), t.id]);
     else occ.set(k, t.id);
     const r = rules.get(t.recurrenceId);
-    if (r && t.status === 'planned' && !occurrences({ ...r, exceptions: {} }, t.occurrenceDate, t.occurrenceDate).length) add('recurrence', 'warn', `Ocorrência prevista de “${t.description}” fora das datas da regra`, [t.id]);
+    if (r && t.status === 'planned') {
+      const from = /^\d{4}-\d{2}-\d{2}$/.test(key) ? key : `${key.slice(0, 7)}-01`;
+      const to = /^\d{4}-\d{2}-\d{2}$/.test(key) ? key : `${key.slice(0, 7)}-31`;
+      if (!ruleOccurrences({ ...r, exceptions: {} }, from, to).some((o) => o.key === key)) add('recurrence', 'warn', `Ocorrência prevista de “${t.description}” fora das datas da regra`, [t.id]);
+    }
   }
   for (const r of rules.values()) {
     if (r.endDate && r.endDate < r.startDate) add('recurrence', 'error', `Recorrência “${r.description}” termina antes de começar`, []);

@@ -8,15 +8,18 @@ export function openMenu(anchor, items, { align = 'end' } = {}) {
   const list = h('div', { class: 'menu', role: 'menu' });
   const buttons = [];
   for (const it of items) {
-    if (it === 'sep') { list.append(h('div', { class: 'menu-sep', role: 'separator' })); continue; }
+    if (it === 'sep') { if (list.lastChild && !list.lastChild.classList.contains('menu-sep')) list.append(h('div', { class: 'menu-sep', role: 'separator' })); continue; }
     if (!it) continue;
+    if (it.header) { list.append(h('div', { class: 'menu-header', role: 'presentation' }, it.header)); continue; }
+    const checkable = typeof it.checked === 'boolean';
     const b = h('button', {
-      class: `menu-item${it.danger ? ' is-danger' : ''}`, type: 'button', role: 'menuitem', disabled: it.disabled,
+      class: `menu-item${it.danger ? ' is-danger' : ''}${it.checked ? ' is-checked' : ''}`, type: 'button', role: checkable ? 'menuitemradio' : 'menuitem', 'aria-checked': checkable ? String(it.checked) : null, disabled: it.disabled,
       onclick: (ev) => { ev.stopPropagation(); closeMenu(); it.onSelect(); },
-    }, it.swatch ? h('span', { class: 'swatch', style: { '--sw': it.swatch === 'auto' ? 'var(--accent)' : `var(--pal-${it.swatch})` } }) : it.icon ? icon(it.icon, 'icon-sm') : h('span', { class: 'icon-sm' }), h('span', null, it.label));
+    }, it.swatch ? h('span', { class: 'swatch', style: { '--sw': it.swatch === 'auto' ? 'var(--accent)' : `var(--pal-${it.swatch})` } }) : checkable ? (it.checked ? icon('check', 'icon-sm') : h('span', { class: 'icon-sm' })) : it.icon ? icon(it.icon, 'icon-sm') : h('span', { class: 'icon-sm' }), h('span', null, it.label));
     buttons.push(b);
     list.append(b);
   }
+  if (list.lastChild?.classList.contains('menu-sep')) list.lastChild.remove();
   document.body.append(list);
   const r = anchor.getBoundingClientRect();
   const mw = list.offsetWidth, mh = list.offsetHeight;

@@ -4,6 +4,7 @@ import { formatDate } from '../utils/dates.js';
 import * as repo from '../database/repository.js';
 import { dataPanel, dangerPanel, diagnosticsPanel } from './backup-ui.js';
 import { DB_VERSION, APP_VERSION, DB_NAME } from '../database/schema.js';
+import { APP_AUTHOR } from '../version.js';
 import { cashPosition } from '../services/finance.js';
 import { openModal, confirmDialog } from '../components/modal.js';
 import { toast, toastError } from '../components/toast.js';
@@ -212,9 +213,16 @@ function planning() {
     try { await repo.setPrefs({ variableEstimate: v }); toast('Estimativa de gastos variáveis salva'); } catch (err) { toastError(err); }
   });
   margin.style.width = variable.style.width = '220px';
+  // Limites dos avisos discretos (orçamentos, previsões e vencimentos próximos).
+  const warnAt = segmented({ label: 'Avisar orçamento a partir de', size: 'segmented-sm', value: String(prefs.budgetWarnAt ?? 80), options: ['70', '80', '90', '100'].map((v) => ({ value: v, label: `${v}%` })),
+    onChange: async (v) => { try { await repo.setPrefs({ budgetWarnAt: Number(v) }); toast('Limite de atenção salvo'); } catch (err) { toastError(err); } } });
+  const dueSoon = segmented({ label: 'Antecedência dos vencimentos', size: 'segmented-sm', value: String(prefs.dueSoonDays ?? 3), options: [['0', 'No dia'], ['1', '1 dia'], ['3', '3 dias'], ['7', '7 dias']].map(([v, l]) => ({ value: v, label: l })),
+    onChange: async (v) => { try { await repo.setPrefs({ dueSoonDays: Number(v) }); toast('Antecedência salva'); } catch (err) { toastError(err); } } });
   return h('div', null,
     settingsRow('Margem de segurança mensal', 'Reserva descontada do valor disponível para investir.', margin),
-    settingsRow('Gastos variáveis estimados', 'Aplicados às projeções dos próximos meses (mercado, lazer, transporte…).', variable));
+    settingsRow('Gastos variáveis estimados', 'Aplicados às projeções dos próximos meses (mercado, lazer, transporte…).', variable),
+    settingsRow('Atenção nos orçamentos', 'Orçamentos e previsões mensais mudam para “atenção” ao atingir esse percentual. Ao passar de 100%, o excedente é mostrado.', warnAt),
+    settingsRow('Vencimentos próximos', 'Quanto tempo antes um compromisso aparece em “Atenção”.', dueSoon));
 }
 
 // ——— Integridade ———
@@ -248,8 +256,8 @@ function shortcuts() {
   return section(null, null, h('div', { class: 'shortcuts' }, ...list.map(([k, l]) => h('div', { class: 'shortcut' }, h('span', { class: 'keys' }, ...k.split(' ').map((x) => h('kbd', null, x))), h('span', { class: 'muted small' }, l)))));
 }
 
-const REPO_URL = 'https://github.com/filipeesantana/fluxo';
-const APP_URL = 'https://filipeesantana.github.io/fluxo/';
+const REPO_URL = 'https://github.com/filipeesantana/Fluxo';
+const APP_URL = 'https://filipeesantana.github.io/Fluxo/';
 
 function personalization(rerender) {
   const SECTIONS = [['overview', 'Visão geral', '#/visao-geral'], ['planning', 'Planejamento (abas)', '#/planejamento'], ['entries', 'Lançamentos (exibição)', '#/lancamentos'], ['investments', 'Investimentos', '#/investimentos'], ['settings', 'Configurações (ordem dos grupos)', '#/configuracoes']];
@@ -271,27 +279,29 @@ function personalization(rerender) {
 
 function about() {
   const p = (...c) => h('p', { class: 'small' }, ...c);
-  const sub = (t) => h('h3', null, t);
+  const sub = (x) => h('h3', null, x);
   return h('div', { class: 'stack-lg about' },
-    h('div', { class: 'about-brand' }, h('img', { src: 'assets/brand/fluxo-symbol.svg', alt: '', width: 40, height: 40 }), h('div', null, h('strong', null, 'Fluxo'), h('div', { class: 'faint small' }, `Versão ${APP_VERSION} · esquema de dados v${DB_VERSION}`))),
+    h('div', { class: 'about-brand' }, h('img', { src: 'assets/brand/fluxo-symbol.svg', alt: '', width: 40, height: 40 }),
+      h('div', null, h('strong', null, 'Fluxo'), h('div', { class: 'faint small' }, `Versão ${APP_VERSION} · esquema de dados v${DB_VERSION}`), h('div', { class: 'faint small' }, `Desenvolvido por ${APP_AUTHOR}`))),
     section(null, null,
-      sub('O que é'),
-      p('Um organizador financeiro pessoal que roda inteiro no seu navegador. Ele junta, num só lugar, o que entrou, o que saiu, o que ainda vai vencer e quanto sobra para investir no mês.'),
       sub('Para que serve'),
-      p('Para responder perguntas simples com números confiáveis: quanto ainda vou gastar este mês, quanto sobra depois das contas, quando uma meta fica pronta. Ele não substitui seu banco nem movimenta dinheiro.'),
-      sub('Como foi pensado'),
-      p('Poucos campos para registrar, cálculos transparentes e nada escondido: cada indicador mostra de onde vem. Previsto e realizado ficam sempre separados, e simulações nunca viram lançamentos sozinhas.'),
-      sub('Como funciona'),
-      p('Todos os números saem de um único motor de cálculo, usado pela visão geral, pelo calendário, pela projeção e pelos detalhamentos. Valores são guardados em centavos inteiros, sem arredondamentos acumulados.'),
+      p('O Fluxo é uma ferramenta gratuita de organização financeira pessoal. Ela ajuda a registrar o que entra e o que sai, entender para onde o dinheiro vai, planejar as contas dos próximos meses e ver quanto sobra para guardar ou investir.'),
+      sub('Como começar'),
+      p('Cadastre suas contas e cartões, registre receitas e despesas e use “Repetir” para o que se repete. A Visão geral mostra o resumo do mês; cada indicador abre a conta que levou até ele.'),
+      sub('Recorrências e compromissos'),
+      p('Qualquer receita ou despesa pode se repetir, seja paga por Pix, dinheiro, débito, cartão ou benefício. Há quatro jeitos de repetir por mês: num dia fixo, em vários dias, com datas flexíveis (ex.: duas consultas por mês, datas a combinar) ou como previsão mensal (ex.: até R$ 400 de combustível, consumidos pelos gastos que você registrar). Em Planejamento → Compromissos, cada mês tem sua lista: marque o que foi pago, defina datas e acompanhe o que falta.'),
+      sub('Calculadora'),
+      p('Calculadora comum, com porcentagens fáceis (10% de 800, 800 + 10%), ferramentas rápidas e a opção “Usar valores do Fluxo” para calcular com dados reais, como 70% da sobra do mês. Cálculos podem ser salvos como estáticos (guardam os valores do momento) ou dinâmicos (acompanham os dados). Nada é gravado nos lançamentos sem sua confirmação.'),
+      sub('Personalização'),
+      p('Use “Personalizar” para mover, redimensionar, ocultar e colorir componentes e escolher como cada informação aparece. O encaixe automático aproveita os espaços sem bagunçar a ordem. No celular, a organização é guardada à parte.'),
       sub('Onde ficam seus dados'),
-      p('No IndexedDB deste navegador, neste dispositivo. É local-first: não há conta, servidor, sincronização nem telemetria. O endereço do site faz parte da identidade do armazenamento — o mesmo navegador no mesmo endereço encontra os mesmos dados.'),
-      p('O IndexedDB não é criptografado. Qualquer pessoa ou programa com acesso a este perfil do navegador pode ler os dados. Limpar os dados do site, usar navegação privada ou trocar de navegador pode fazê-los desaparecer.'),
+      p('No IndexedDB deste navegador, neste dispositivo. Não há conta, servidor, sincronização nem rastreamento. O IndexedDB não é criptografado: quem tiver acesso a este perfil do navegador pode ler os dados, e limpar os dados do site pode apagá-los.'),
       sub('Backups'),
-      p('O backup é um arquivo JSON completo, com dados, preferências e personalização, conferido por uma soma SHA-256 que detecta arquivos corrompidos ou alterados (não é uma assinatura). Você pode protegê-lo com senha: sem a senha, não há como recuperar o conteúdo. Guarde os arquivos fora do navegador, em local privado.'),
+      p('O backup é um arquivo completo, com lançamentos, recorrências, cálculos salvos e personalização, conferido por uma soma SHA-256. Pode ser protegido por senha — sem a senha, não há recuperação. Guarde as cópias fora do navegador.'),
       sub('Limitações'),
-      p('Não há sincronização entre aparelhos, nem importação de extratos bancários. Os cálculos dependem do que foi registrado. Projeções são estimativas e não garantias. O app foi testado no Chromium; outros navegadores modernos devem funcionar, mas não foram verificados em todas as combinações.'),
+      p('Sem sincronização entre aparelhos e sem conexão com bancos. Os números dependem do que foi registrado; projeções e simulações são estimativas, não garantias. Os testes automatizados rodam no Chromium; outros navegadores modernos devem funcionar, mas não foram verificados automaticamente.'),
       h('div', { class: 'row wrap' },
-        h('a', { class: 'btn btn-sm', href: REPO_URL, target: '_blank', rel: 'noopener noreferrer' }, 'Repositório'),
-        h('a', { class: 'btn btn-sm', href: APP_URL, target: '_blank', rel: 'noopener noreferrer' }, 'Endereço do aplicativo')),
+        h('a', { class: 'btn btn-sm', href: APP_URL, target: '_blank', rel: 'noopener noreferrer' }, 'Endereço do aplicativo'),
+        h('a', { class: 'btn btn-sm', href: REPO_URL, target: '_blank', rel: 'noopener noreferrer' }, 'Repositório')),
       h('p', { class: 'faint xsmall' }, `Banco local “${DB_NAME}”.`)));
 }

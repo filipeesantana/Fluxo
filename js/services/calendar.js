@@ -15,6 +15,7 @@ import { monthItems, summarize } from './finance.js';
  */
 
 export function eventDate(item, ctx) {
+  if (!item.date) return null; // data a definir: nunca é posicionada num dia inventado
   const acc = ctx.accounts.get(item.sourceId);
   if (item.planId && !isCard(acc)) return dateInMonth(item.month, parseISO(item.date).d);
   return item.date;
@@ -22,6 +23,7 @@ export function eventDate(item, ctx) {
 
 function statusOf(item, today) {
   if (item.status === 'done') return 'done';
+  if (!item.date) return 'tbd';
   return item.date < today ? 'overdue' : 'planned';
 }
 
@@ -42,11 +44,13 @@ export function calendarMonth(ctx, month) {
     return days.get(d);
   };
   const seen = new Set();
+  const undated = [];
   // Compras no cartão de um mês podem ter competência um ou dois meses depois.
   for (const m of [addMonths(month, -1), month, addMonths(month, 1), addMonths(month, 2)]) {
     for (const it of monthItems(ctx, m)) {
       if (seen.has(it.id)) continue;
       const d = eventDate(it, ctx);
+      if (!d) { if (m === month && it.type !== 'transfer') { seen.add(it.id); undated.push(it); } continue; }
       if (d < from || d > to) continue;
       seen.add(it.id);
       const kind = kindOf(it, ctx);
@@ -82,7 +86,9 @@ export function calendarMonth(ctx, month) {
     dd.events.sort((a, b) => order[a.status] - order[b.status] || b.amount - a.amount);
     for (const k of Object.keys(totals)) totals[k] += dd[k];
   }
-  const res = { month, days, totals, dayCount: daysInMonth(...month.split('-').map(Number)) };
+  // Itens sem data (datas flexíveis, previsões mensais) ficam fora da grade, listados à parte.
+  undated.sort((a, b) => (a.forecast === b.forecast ? a.description.localeCompare(b.description, 'pt-BR') : a.forecast ? 1 : -1));
+  const res = { month, days, totals, undated, dayCount: daysInMonth(...month.split('-').map(Number)) };
   ctx.cache.set(key, res);
   return res;
 }

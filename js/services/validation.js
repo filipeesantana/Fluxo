@@ -20,9 +20,14 @@ export function validateTransaction(t) {
   check(e, STATUS.includes(t.status), 'situação inválida');
   check(e, isStr(t.description, 200), 'descrição inválida');
   check(e, posCents(t.amount), 'valor deve ser maior que zero');
-  check(e, isISODate(t.date), 'data inválida');
+  // Data a definir só é aceita em compromissos previstos (nunca em algo já pago).
+  check(e, isISODate(t.date) || (t.date == null && t.status === 'planned' && t.type !== 'transfer'), t.date == null ? 'um lançamento realizado precisa de data' : 'data inválida');
   check(e, isMonth(t.month), 'competência inválida');
-  for (const k of ['categoryId', 'blockId', 'sourceId', 'toAccountId', 'refundOf', 'planId', 'recurrenceId', 'note', 'method']) check(e, optStr(t[k], 500), `${k} inválido`);
+  for (const k of ['categoryId', 'blockId', 'sourceId', 'toAccountId', 'refundOf', 'planId', 'recurrenceId', 'note', 'method', 'forecastId', 'remainderOf']) check(e, optStr(t[k], 500), `${k} inválido`);
+  if (t.occurrenceKey != null) check(e, isOccKey(t.occurrenceKey), 'chave de ocorrência inválida');
+  if (t.period != null) check(e, isMonth(t.period), 'período inválido');
+  if (t.plannedAmount != null) check(e, posCents(t.plannedAmount), 'valor previsto inválido');
+  if (t.estimated != null) check(e, typeof t.estimated === 'boolean', 'indicador de estimativa inválido');
   if (t.type === 'transfer') {
     check(e, t.sourceId && t.toAccountId, 'transferência precisa de origem e destino');
     check(e, t.sourceId !== t.toAccountId, 'origem e destino iguais');
@@ -55,17 +60,35 @@ export function validateAccount(a) {
   return e;
 }
 
+/** Chaves de ocorrência: 'AAAA-MM-DD' · 'AAAA-MM' · 'AAAA-MM@dia' · 'AAAA-MM#n'. */
+export function isOccKey(k) {
+  if (typeof k !== 'string' || k.length > 16) return false;
+  if (isISODate(k) || isMonth(k)) return true;
+  const m = /^(\d{4}-\d{2})([@#])(\d{1,2})$/.exec(k);
+  return Boolean(m && isMonth(m[1]) && Number(m[3]) >= 1 && Number(m[3]) <= 31);
+}
+const RULE_MODES = ['fixed', 'days', 'flex', 'forecast'];
+
 export function validateRecurrence(r) {
   const e = [];
   check(e, isStr(r.id, 64) && r.id, 'id ausente');
   check(e, r.type === 'expense' || r.type === 'income', 'tipo inválido');
   check(e, isStr(r.description, 200) && r.description.trim(), 'descrição obrigatória');
   check(e, posCents(r.amount), 'valor deve ser maior que zero');
-  check(e, ['monthly', 'weekly', 'yearly'].includes(r.frequency), 'frequência inválida');
-  check(e, r.interval == null || (Number.isInteger(r.interval) && r.interval >= 1 && r.interval <= 60), 'intervalo inválido');
+  check(e, ['monthly', 'weekly', 'yearly', 'daily'].includes(r.frequency), 'frequência inválida');
+  // Intervalo sempre positivo e finito: impede frequência zero/negativa e geração infinita.
+  check(e, r.interval == null || (Number.isInteger(r.interval) && r.interval >= 1 && r.interval <= (r.frequency === 'daily' ? 366 : 60)), 'intervalo inválido');
+  check(e, r.mode == null || RULE_MODES.includes(r.mode), 'modo de recorrência inválido');
+  if (r.mode && r.mode !== 'fixed') check(e, r.frequency === 'monthly', 'este modo só existe para repetição mensal');
+  if (r.mode === 'days') check(e, Array.isArray(r.days) && r.days.length >= 1 && r.days.length <= 10 && r.days.every((d) => Number.isInteger(d) && d >= 1 && d <= 31) && new Set(r.days).size === r.days.length, 'dias do mês inválidos');
+  if (r.mode === 'flex') check(e, Number.isInteger(r.perPeriod) && r.perPeriod >= 1 && r.perPeriod <= 31, 'quantidade por mês inválida');
+  if (r.mode === 'forecast') check(e, r.type === 'expense', 'previsão mensal é só para despesas');
+  check(e, r.closed == null || (typeof r.closed === 'object' && !Array.isArray(r.closed) && Object.keys(r.closed).length <= 1200 && Object.keys(r.closed).every(isMonth)), 'meses encerrados inválidos');
+  check(e, optStr(r.method, 20) && optStr(r.sourceId, 64), 'fonte ou método inválido');
+  check(e, r.estimated == null || typeof r.estimated === 'boolean', 'indicador de estimativa inválido');
   check(e, isISODate(r.startDate), 'data inicial inválida');
   check(e, r.endDate == null || (isISODate(r.endDate) && r.endDate >= r.startDate), 'data final inválida');
-  check(e, r.exceptions == null || (typeof r.exceptions === 'object' && !Array.isArray(r.exceptions) && Object.keys(r.exceptions).length <= 5000 && Object.keys(r.exceptions).every(isISODate)), 'exceções inválidas');
+  check(e, r.exceptions == null || (typeof r.exceptions === 'object' && !Array.isArray(r.exceptions) && Object.keys(r.exceptions).length <= 5000 && Object.keys(r.exceptions).every(isOccKey) && Object.values(r.exceptions).every((v) => v === 'skipped' || v === 'cancelled')), 'exceções inválidas');
   check(e, r.anchorDay == null || (Number.isInteger(r.anchorDay) && r.anchorDay >= 1 && r.anchorDay <= 31), 'dia de referência inválido');
   check(e, r.count == null || (Number.isInteger(r.count) && r.count >= 1 && r.count <= 1000), 'quantidade de repetições inválida');
   check(e, r.pauses == null || (Array.isArray(r.pauses) && r.pauses.length <= 100 && r.pauses.every((p) => p && isISODate(p.from) && (p.to == null || (isISODate(p.to) && p.to >= p.from)))), 'pausas inválidas');
@@ -118,6 +141,28 @@ export function validateGoal(g) {
   check(e, g.extras == null || (Array.isArray(g.extras) && g.extras.every((x) => x && isMonth(x.month) && posCents(x.amount))), 'aportes extraordinários inválidos');
   check(e, isMonth(g.startMonth), 'mês inicial inválido');
   check(e, g.deadline == null || isMonth(g.deadline), 'prazo inválido');
+  return e;
+}
+
+/**
+ * Cálculo salvo da calculadora. Guarda apenas texto de expressão (gramática
+ * aritmética fechada, sem código) e referências estruturadas a dados do Fluxo.
+ * Referências nunca apontam para outros cálculos: dependência circular é
+ * impossível por construção.
+ */
+export const CALC_REF_KINDS = ['incomeReceived', 'incomeExpected', 'incomeTotal', 'expenseDone', 'expensePending', 'expenseTotal', 'projectedSurplus', 'availableToInvest', 'freeSurplus', 'patrimony', 'category', 'block', 'source', 'accountBalance', 'goalTarget', 'goalRemaining', 'transaction', 'commitmentLeft'];
+export function validateCalculation(c) {
+  const e = [];
+  check(e, isStr(c.id, 64) && c.id, 'id ausente');
+  check(e, isStr(c.name, 80) && c.name.trim(), 'nome inválido');
+  check(e, isStr(c.expr, 400) && /^[0-9.,+\-*/×÷−()%\s@de]*$/i.test(c.expr), 'expressão inválida');
+  check(e, c.mode === 'static' || c.mode === 'dynamic', 'tipo de cálculo inválido');
+  check(e, Array.isArray(c.refs) && c.refs.length <= 12 && c.refs.every((r) => r && isStr(r.id, 8) && /^r\d{1,2}$/.test(r.id) && CALC_REF_KINDS.includes(r.kind) && optStr(r.entityId, 64) && (r.month == null || r.month === 'current' || r.month === 'selected' || isMonth(r.month))), 'referências inválidas');
+  check(e, c.value == null || Number.isFinite(c.value), 'resultado inválido');
+  check(e, c.values == null || (typeof c.values === 'object' && !Array.isArray(c.values) && Object.values(c.values).every(Number.isFinite)), 'valores de referência inválidos');
+  check(e, c.unit == null || c.unit === 'money' || c.unit === 'number' || c.unit === 'percent', 'unidade inválida');
+  check(e, c.favorite == null || typeof c.favorite === 'boolean', 'favorito inválido');
+  check(e, optStr(c.note, 300), 'observação inválida');
   return e;
 }
 
@@ -179,6 +224,7 @@ export const VALIDATORS = {
   investments: guarded(validateInvestment),
   investmentEvents: guarded(validateEvent),
   goals: guarded(validateGoal),
+  calculations: guarded(validateCalculation),
   meta: guarded(validateMeta, META_LIMITS),
 };
 

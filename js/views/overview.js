@@ -9,6 +9,8 @@ import { investmentValue, simulateGoal } from '../services/investments.js';
 import { barList, dailyChart, lineChart, incomeExpenseChart, progress, autoWidth, donutChart, columnsChart, groupTable } from '../components/charts.js';
 import { widgetGrid, isEditing, setEditing } from '../components/layout.js';
 import { openKpiDetail } from './drilldown.js';
+import { kpiFormat, commitmentsWidget, signalsWidget, highlightsWidget, topSummary } from './widgets-extra.js';
+import { budgetLevel } from '../services/signals.js';
 import { backupReminder } from './backup-ui.js';
 import { openModal } from '../components/modal.js';
 import { segmented } from '../components/fields.js';
@@ -20,15 +22,15 @@ import { openItem, itemMenu, toggleStatus } from './actions.js';
 const lastKpi = new Map();
 const MONTHS_PT = ['jan', 'fev', 'mar', 'abr', 'mai', 'jun', 'jul', 'ago', 'set', 'out', 'nov', 'dez'];
 
-function kpi(id, { label, value, sub, tone, iconName, hero = false, meta, valueCls = '', onOpen, cfg = {} }) {
+function kpi(id, { label, value, sub, tone, iconName, hero = false, meta, valueCls = '', onOpen, cfg = {}, extra = null }) {
   const changed = lastKpi.has(id) && lastKpi.get(id) !== value;
   lastKpi.set(id, value);
   // O indicador inteiro é um botão: abre o detalhamento do cálculo (drill-down).
   return h('button', { class: `kpi kpi-${tone}${hero ? ' is-hero' : ''}${changed ? ' is-updated' : ''}${cfg.size === 's' ? ' is-compact' : ''}`, type: 'button', dataset: { kpi: id }, onclick: onOpen, 'aria-label': `${label}: ${formatMoney(value)}. Ver como foi calculado.` },
     h('span', { class: 'kpi-top' }, h('span', { class: 'kpi-icon' }, icon(iconName)), h('span', { class: 'kpi-label' }, label), h('span', { class: 'kpi-more', 'aria-hidden': 'true' }, icon('chev-right', 'icon-sm'))),
     h('span', { class: `kpi-value num ${valueCls}` }, value < 0 ? `− ${formatMoney(-value)}` : formatMoney(value)),
-    sub ? h('span', { class: 'kpi-sub' }, sub) : null,
-    meta || null);
+    sub && !extra ? h('span', { class: 'kpi-sub' }, sub) : null,
+    extra || meta || null);
 }
 
 const signedPct = (r) => `${r > 0 ? '+' : ''}${formatPercent(r * 100, Math.abs(r) < 0.1 ? 1 : 0)}`;
@@ -160,6 +162,7 @@ function distWidget(title, hint, groups, field, labelOf, emptyText, emptyAction)
     else if (chart === 'donut') body = donutChart(groups, { ...opts, centerLabel: 'em despesas' });
     else if (chart === 'columns') body = columnsChart(groups, { ...opts, frac: cfg.size === 'f' ? 1 : cfg.size === 'xl' ? 0.66 : cfg.size === 'l' ? 0.5 : 0.33 });
     else if (chart === 'table') body = groupTable(groups, opts);
+    else if (chart === 'top') body = topSummary(groups, labelOf, onSelect);
     else body = barList(groups, { ...opts, empty: emptyText, emptyAction });
     return panel(title, { hint: groups.length ? `${formatMoney(total)} · ${hint}` : hint },
       body, cfg.chart === 'donut' && hasNeg ? h('p', { class: 'faint xsmall' }, 'Há valores negativos (estornos maiores que os gastos); a rosca foi trocada por barras.') : null);
@@ -190,8 +193,23 @@ function movementsWidget(s, m, isFuture) {
   };
 }
 
-function goalsWidget() {
+function goalsProgress() {
+  const events = repo.list('investmentEvents');
+  const t = today();
+  return repo.list('goals').filter((g) => !g.archived).map((g) => {
+    const inv = g.investmentId ? repo.get('investments', g.investmentId) : null;
+    return { id: g.id, name: g.name, target: g.target, current: inv ? investmentValue(inv, events, t).informed : g.initial || 0 };
+  });
+}
+
+function goalsWidget(cfg = {}) {
   const goals = repo.list('goals').filter((g) => !g.archived);
+  if (cfg.chart === 'percent' && goals.length) {
+    return panel('Metas', { actions: h('a', { class: 'btn btn-ghost btn-sm', href: '#/investimentos' }, 'Abrir') }, h('div', { class: 'goal-pcts' }, ...goalsProgress().slice(0, 4).map((g) => {
+      const r = g.target ? g.current / g.target : 0;
+      return h('div', { class: 'goal-pct' }, h('strong', { class: `num ${r >= 1 ? 'pos' : 'invest'}` }, formatPercent(Math.min(1, r) * 100, 0)), h('span', { class: 'small truncate' }, g.name), h('span', { class: 'faint xsmall num' }, r >= 1 ? 'concluída' : `faltam ${formatMoney(g.target - g.current)}`));
+    })));
+  }
   if (!goals.length) return h('div', { class: 'empty-block' }, 'Nenhuma meta ativa.', h('a', { class: 'btn btn-sm', href: '#/investimentos' }, 'Criar meta'));
   const events = repo.list('investmentEvents');
   const t = today();
@@ -213,27 +231,34 @@ export function overviewRegistry({ ctx, s, m, isCurrent, isFuture, cash, empty }
   const ratioBar = (r, color) => r == null ? null : h('span', { class: 'kpi-bar', style: { color } }, h('span', { style: { width: `${Math.round(Math.min(1, r) * 100)}%` } }));
   const accounts = repo.list('accounts').filter((a) => !a.archived && a.kind !== 'credit');
   const firstAction = empty ? h('button', { class: 'btn btn-sm btn-primary', type: 'button', onclick: () => openEntryForm() }, icon('plus', 'icon-sm'), 'Registrar o primeiro gasto') : null;
-  const DIST = { charts: ['bars', 'columns', 'donut', 'table'], chart: 'bars', sizes: ['m', 'l', 'xl', 'f'], color: false };
-  const KPI = { sizes: ['s', 'm', 'l'], color: true, locked: false };
+  const DIST = { charts: ['bars', 'columns', 'donut', 'table', 'top'], chart: 'bars', sizes: ['m', 'l', 'xl', 'f'], color: false };
+  const KPI = { sizes: ['s', 'm', 'l'], color: true, locked: false, charts: ['value', 'detail', 'trend', 'compare'], chart: 'value' };
   const kpiOpen = (kind) => () => openKpiDetail(kind, m);
+  const fx = (kind, cfg, detail) => kpiFormat(kind, cfg.chart, ctx, m, detail);
+  const prefs = repo.prefs();
 
   return {
     'kpi-surplus': { ...KPI, title: 'Sobra projetada', description: 'Receitas do mês menos todas as despesas.', size: 'l',
       render: (cfg) => kpi('surplus', { label: 'Sobra projetada', value: s.projectedSurplus, tone: s.projectedSurplus < 0 ? 'neg' : 'accent', iconName: 'chart', hero: true, valueCls: s.projectedSurplus < 0 ? 'neg-value' : '', onOpen: kpiOpen('surplus'),
         sub: s.projectedSurplus < 0 ? 'Déficit: as despesas do mês superam as receitas.' : 'Receitas do mês menos todas as despesas, pagas e previstas.',
-        meta: h('span', { class: 'kpi-meta' }, h('span', null, 'Até agora: ', h('strong', { class: 'num' }, formatMoney(s.currentSurplus))), s.safetyMargin ? h('span', null, `Margem: ${formatMoney(s.safetyMargin)}`) : null), cfg }) },
+        meta: h('span', { class: 'kpi-meta' }, h('span', null, 'Até agora: ', h('strong', { class: 'num' }, formatMoney(s.currentSurplus))), s.safetyMargin ? h('span', null, `Margem: ${formatMoney(s.safetyMargin)}`) : null), cfg,
+        extra: fx('surplus', cfg, [['Receitas do mês', formatMoney(s.incomeTotal), 'pos'], ['Despesas do mês', `− ${formatMoney(s.expenseTotal)}`], s.forecastLeft ? ['das quais previsões restantes', formatMoney(s.forecastLeft), 'faint'] : null]) }) },
     'kpi-invest': { ...KPI, title: 'Disponível para investir', description: 'Sobra livre após margem e aportes do mês.', size: 'l',
       render: (cfg) => kpi('invest', { label: 'Disponível para investir', value: s.availableToInvest, tone: 'invest', iconName: 'trend', hero: true, onOpen: kpiOpen('invest'),
         sub: 'Sobra livre (sem benefícios restritos), após margem e aportes já feitos. Nada é investido automaticamente.',
-        meta: h('span', { class: 'kpi-meta' }, h('span', null, 'Aportado no mês: ', h('strong', { class: 'num' }, formatMoney(s.contributed)))), cfg }) },
+        meta: h('span', { class: 'kpi-meta' }, h('span', null, 'Aportado no mês: ', h('strong', { class: 'num' }, formatMoney(s.contributed)))), cfg,
+        extra: fx('invest', cfg, [['Sobra livre', formatMoney(s.freeSurplus)], s.safetyMargin ? ['Margem de segurança', `− ${formatMoney(s.safetyMargin)}`] : null, ['Aportes no mês', `− ${formatMoney(s.contributed)}`]]) }) },
     'kpi-income-received': { ...KPI, title: 'Receitas recebidas', size: 's',
-      render: (cfg) => kpi('inRec', { label: 'Receitas recebidas', value: s.incomeReceived, tone: 'pos', iconName: 'in', onOpen: kpiOpen('incomeReceived'), sub: s.incomeTotal ? `de ${formatMoney(s.incomeTotal)} no mês${s.restrictedIncome ? ` · ${formatMoney(s.restrictedIncome)} em benefícios` : ''}` : 'nenhuma receita no mês', meta: ratioBar(receivedRatio, 'var(--pos)'), cfg }) },
+      render: (cfg) => kpi('inRec', { label: 'Receitas recebidas', value: s.incomeReceived, tone: 'pos', iconName: 'in', onOpen: kpiOpen('incomeReceived'), sub: s.incomeTotal ? `de ${formatMoney(s.incomeTotal)} no mês${s.restrictedIncome ? ` · ${formatMoney(s.restrictedIncome)} em benefícios` : ''}` : 'nenhuma receita no mês', meta: ratioBar(receivedRatio, 'var(--pos)'), cfg, extra: fx('inRec', cfg, [['Total do mês', formatMoney(s.incomeTotal)], ['Ainda a receber', formatMoney(s.incomeExpected)]]) }) },
     'kpi-income-expected': { ...KPI, title: 'Receitas previstas', size: 's',
-      render: (cfg) => kpi('inExp', { label: 'Receitas previstas', value: s.incomeExpected, tone: 'plan', iconName: 'clock', onOpen: kpiOpen('incomeExpected'), sub: s.incomeExpected ? 'a receber neste mês' : 'nada a receber', cfg }) },
+      render: (cfg) => kpi('inExp', { label: 'Receitas previstas', value: s.incomeExpected, tone: 'plan', iconName: 'clock', onOpen: kpiOpen('incomeExpected'), sub: s.incomeExpected ? 'a receber neste mês' : 'nada a receber', cfg, extra: fx('inExp', cfg, [['Já recebido', formatMoney(s.incomeReceived)], ['Total do mês', formatMoney(s.incomeTotal)]]) }) },
     'kpi-expense-done': { ...KPI, title: 'Despesas realizadas', size: 's',
-      render: (cfg) => kpi('exDone', { label: 'Despesas realizadas', value: s.expenseDone, tone: 'neg', iconName: 'out', onOpen: kpiOpen('expenseDone'), sub: paidRatio != null ? `${formatPercent(paidRatio * 100, 0)} das despesas do mês` : 'nenhuma despesa paga', meta: ratioBar(paidRatio, 'var(--neg)'), cfg }) },
+      render: (cfg) => kpi('exDone', { label: 'Despesas realizadas', value: s.expenseDone, tone: 'neg', iconName: 'out', onOpen: kpiOpen('expenseDone'), sub: paidRatio != null ? `${formatPercent(paidRatio * 100, 0)} das despesas do mês` : 'nenhuma despesa paga', meta: ratioBar(paidRatio, 'var(--neg)'), cfg, extra: fx('exDone', cfg, [['Contas fixas', formatMoney(s.expFixed)], ['Parcelas', formatMoney(s.expInstallments)], ['Pontuais e previsões', formatMoney(s.expOneOff + s.expForecast)]]) }) },
     'kpi-expense-pending': { ...KPI, title: 'Compromissos pendentes', size: 's',
-      render: (cfg) => kpi('exPend', { label: 'Compromissos pendentes', value: s.expensePending, tone: 'warn', iconName: 'alert', onOpen: kpiOpen('expensePending'), sub: pendingSub, cfg }) },
+      render: (cfg) => kpi('exPend', { label: 'Compromissos pendentes', value: s.expensePending, tone: 'warn', iconName: 'alert', onOpen: kpiOpen('expensePending'), sub: pendingSub, cfg, extra: fx('exPend', cfg, [['Faturas em aberto', formatMoney(billsOpen)], ['Atrasados', formatMoney(s.overdue), s.overdue ? 'neg' : ''], ['Demais previstos', formatMoney(Math.max(0, s.expensePending - billsOpen))]]) }) },
+    commitments: { title: 'Compromissos do mês', description: 'Pendente, próximo vencimento, contas restantes e quanto já foi pago.', size: 'm', sizes: ['m', 'l', 'xl', 'f'], charts: ['summary', 'list', 'progress'], chart: 'summary', color: true, render: (cfg) => commitmentsWidget(ctx, m, cfg) },
+    signals: { title: 'Atenção', description: 'Avisos discretos: orçamentos, atrasos, vencimentos próximos, déficit e margem.', size: 'm', sizes: ['m', 'l', 'xl', 'f'], render: () => signalsWidget(ctx, m, prefs, goalsProgress()) },
+    highlights: { title: 'Destaques', description: 'Alterna entre sobra, economia em relação ao mês anterior e disponível para investir.', size: 'm', sizes: ['s', 'm', 'l'], charts: ['manual', 'auto'], chart: 'manual', hidden: true, color: true, render: (cfg) => highlightsWidget(ctx, m, cfg) },
     insights: { title: 'Leituras do mês', description: 'Comparações com o mês anterior e metas.', size: 'f', sizes: ['l', 'xl', 'f'], render: () => insightsStrip(ctx, m, topGoal()) },
     'dist-category': { ...DIST, title: 'Por categoria', description: 'Natureza do gasto.', size: 'm', render: distWidget('Por categoria', 'natureza do gasto', s.byCategory, 'categoryId', categoryName, 'Sem gastos neste mês.', firstAction) },
     'dist-block': { ...DIST, title: 'Por bloco', description: 'Contexto: pessoal, casa, moto…', size: 'm', render: distWidget('Por bloco', 'contexto', s.byBlock, 'blockId', blockName, 'Sem gastos neste mês. Blocos agrupam por contexto: pessoal, casa, moto…') },
@@ -259,7 +284,7 @@ export function overviewRegistry({ ctx, s, m, isCurrent, isFuture, cash, empty }
     budgets: { title: 'Orçamentos', description: 'Uso dos limites do mês.', size: 'm', sizes: ['m', 'l', 'xl'], when: () => s.budgets.length > 0,
       render: () => panel('Orçamentos', { actions: h('a', { class: 'btn btn-ghost btn-sm', href: '#/planejamento/orcamentos' }, 'Gerenciar') },
         s.budgets.length ? h('div', { class: 'budgets' }, ...[...s.budgets].sort((a, b) => b.ratio - a.ratio).slice(0, 5).map((b) => budgetRow(b))) : h('div', { class: 'empty-block' }, 'Nenhum orçamento definido.')) },
-    goals: { title: 'Metas', description: 'Progresso das metas ativas.', size: 'm', sizes: ['m', 'l', 'xl'], hidden: true, render: goalsWidget },
+    goals: { title: 'Metas', description: 'Progresso das metas ativas.', size: 'm', sizes: ['m', 'l', 'xl'], hidden: true, charts: ['list', 'percent'], chart: 'list', render: (cfg) => goalsWidget(cfg) },
   };
 }
 
@@ -297,14 +322,18 @@ export function renderOverview(root) {
   put(root, head, backupReminder(), widgetGrid({ section: 'overview', registry, rerender }));
 }
 
+const BUDGET_STATE = { ok: 'Saudável', warn: 'Atenção', full: 'Limite atingido', over: 'Ultrapassado' };
 export function budgetRow(b) {
   const name = b.scope === 'block' ? blockName(b.refId) : categoryName(b.refId);
-  const over = b.remaining < 0;
-  return h('div', { class: 'budget' },
+  const warnAt = b.warnAt ?? repo.prefs().budgetWarnAt ?? 80;
+  const lvl = budgetLevel(b.ratio, warnAt);
+  const tone = lvl === 'over' ? 'neg' : lvl === 'ok' ? 'ok' : 'warn';
+  return h('div', { class: `budget b-${lvl}` },
     h('div', { class: 'budget-top' }, h('span', { class: 'truncate' }, name),
-      h('span', { class: `num small ${over ? 'neg' : b.ratio > 0.85 ? 'warn' : 'faint'}` }, over ? `${formatMoney(-b.remaining)} acima` : `restam ${formatMoney(b.remaining)}`)),
-    progress(b.ratio, { label: `${name}: ${formatPercent(b.ratio * 100, 0)} do orçamento` }),
-    h('div', { class: 'faint xsmall num' }, `${formatMoney(b.used)} de ${formatMoney(b.amount)}`));
+      h('span', { class: `budget-state s-${lvl}` }, BUDGET_STATE[lvl]),
+      h('span', { class: `num small ${lvl === 'over' ? 'neg' : lvl === 'ok' ? 'faint' : 'warn'}` }, lvl === 'over' ? `${formatMoney(-b.remaining)} acima` : `restam ${formatMoney(b.remaining)}`)),
+    progress(b.ratio, { tone, label: `${name}: ${formatPercent(b.ratio * 100, 0)} do orçamento · ${BUDGET_STATE[lvl]}` }),
+    h('div', { class: 'faint xsmall num' }, `${formatMoney(b.used)} de ${formatMoney(b.amount)} · ${formatPercent(b.ratio * 100, 0)}`));
 }
 
 export { simulateGoal };

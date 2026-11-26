@@ -1,13 +1,16 @@
 // Esquema versionado do IndexedDB. Migrações são cumulativas e não destrutivas:
 // cada função leva o banco da versão (n − 1) para n sem apagar dados.
 
+import { APP_VERSION } from '../version.js';
+
+// O nome interno do banco nunca muda: é ele que mantém os dados entre versões.
 export const DB_NAME = 'guia-financeiro.pessoal';
-export const DB_VERSION = 3;
-export const APP_VERSION = '3.0.0';
+export const DB_VERSION = 4;
+export { APP_VERSION };
 
 export const STORES = [
   'transactions', 'categories', 'blocks', 'accounts', 'recurrences',
-  'installmentPlans', 'budgets', 'investments', 'investmentEvents', 'goals', 'meta',
+  'installmentPlans', 'budgets', 'investments', 'investmentEvents', 'goals', 'calculations', 'meta',
 ];
 
 export const DATA_STORES = STORES.filter((s) => s !== 'meta');
@@ -63,5 +66,14 @@ export const MIGRATIONS = {
   // Apenas acrescenta; nenhum dado existente é lido, alterado ou removido.
   3(db) {
     if (!db.objectStoreNames.contains('snapshots')) db.createObjectStore('snapshots', { keyPath: 'id' });
+  },
+
+  // v4 (Fluxo 3.1): cálculos salvos da calculadora e índice único por CHAVE de
+  // ocorrência (datas flexíveis, vários dias no mês). Só acrescenta: registros
+  // antigos não têm a chave e por isso não entram no índice; nada é reescrito.
+  4(db, upgradeTx) {
+    if (!db.objectStoreNames.contains('calculations')) db.createObjectStore('calculations', { keyPath: 'id' });
+    const tx = upgradeTx.objectStore('transactions');
+    if (!tx.indexNames.contains('occurrenceKey')) tx.createIndex('occurrenceKey', ['recurrenceId', 'occurrenceKey'], { unique: true });
   },
 };

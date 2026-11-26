@@ -34,12 +34,20 @@ for (const N of SIZES) {
     for (const n of ['Pessoal', 'Casa', 'Moto', 'Faculdade']) blocks.push(await repo.createNamed('blocks', { name: n }));
     for (let r = 0; r < 12; r++) await repo.saveRecurrence({ type: r ? 'expense' : 'income', description: `Fixa ${r}`, amount: r ? 5000 + r * 100 : 500000, frequency: 'monthly', startDate: '2022-01-10', sourceId: acc.id });
     for (let k = 0; k < 6; k++) await repo.createInstallmentPlan({ description: `Parcelado ${k}`, total: 120000, count: 12, purchaseDate: `2026-0${k + 1}-05`, sourceId: k % 2 ? card.id : acc.id });
+    // 3.1: datas flexíveis, vários dias, a cada 14 dias, previsões, cálculos dinâmicos e layout personalizado.
+    for (let r = 0; r < 4; r++) await repo.createRecurrence({ type: 'expense', description: `Flex ${r}`, amount: 5000, frequency: 'monthly', mode: 'flex', perPeriod: 2 + r, startDate: '2024-01-01', sourceId: acc.id });
+    for (let r = 0; r < 3; r++) await repo.createRecurrence({ type: 'expense', description: `Dias ${r}`, amount: 2000, frequency: 'monthly', mode: 'days', days: [5, 15, 25].slice(0, r + 1), startDate: '2024-01-01', sourceId: acc.id });
+    await repo.createRecurrence({ type: 'expense', description: 'Quinzenal', amount: 3000, frequency: 'weekly', interval: 2, startDate: '2024-01-03', sourceId: acc.id });
+    for (let r = 0; r < 3; r++) await repo.createRecurrence({ type: 'expense', description: `Previsão ${r}`, amount: 40000, frequency: 'monthly', mode: 'forecast', startDate: '2024-01-01', categoryId: cats[r].id });
+    const fc = repo.list('recurrences').filter((x) => x.mode === 'forecast');
+    for (let c = 0; c < 10; c++) await repo.saveCalculation({ name: `Cálculo ${c}`, expr: `@1 × ${10 + c}%`, mode: 'dynamic', refs: [{ id: 'r1', kind: c % 2 ? 'projectedSurplus' : 'expenseTotal', month: 'current' }] });
+    await repo.setUiLayout({ version: 1, sections: { overview: { items: [{ type: 'kpi-surplus', size: 'm', chart: 'trend' }, { type: 'commitments', size: 'l', chart: 'list' }, { type: 'signals', size: 'm' }, { type: 'dist-category', size: 'l', chart: 'donut' }], known: [] } } });
     for (let s = 0; s < N; s += 10000) {
       const ops = [];
       for (let i = s; i < Math.min(N, s + 10000); i++) {
         const y = 2022 + Math.floor((i % 60) / 12), m = 1 + (i % 12), d = 1 + (i % 28);
         const date = `${y}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
-        ops.push({ store: 'transactions', put: { id: `s${i}`, type: i % 9 ? 'expense' : 'income', status: 'done', description: `Item ${i % 997}`, amount: 500 + (i % 9000), date, month: date.slice(0, 7), categoryId: cats[i % cats.length].id, blockId: blocks[i % 4].id, sourceId: i % 3 ? acc.id : null, createdAt: i } });
+        ops.push({ store: 'transactions', put: { id: `s${i}`, type: i % 9 ? 'expense' : 'income', status: 'done', description: `Item ${i % 997}`, amount: 500 + (i % 9000), date, month: date.slice(0, 7), categoryId: cats[i % cats.length].id, blockId: blocks[i % 4].id, sourceId: i % 3 ? acc.id : null, forecastId: i % 17 === 0 ? fc[i % 3].id : undefined, createdAt: i } });
       }
       await db.commit(ops);
     }
@@ -62,6 +70,9 @@ for (const N of SIZES) {
   await p.locator('.horizon .seg', { hasText: '5 anos' }).click(); await p.waitForFunction(() => document.querySelectorAll('.table tbody tr').length === 60); r.projection60Ms = Date.now() - t;
   t = Date.now(); await p.goto(`${url}#/planejamento/calendario`); await p.waitForSelector('.cal-grid'); await frame(p); r.calendarMs = Date.now() - t;
   t = Date.now(); await p.goto(`${url}#/visao-geral`); await p.waitForSelector('[data-kpi]'); await frame(p); r.overviewMs = Date.now() - t;
+  t = Date.now(); await p.goto(`${url}#/planejamento/compromissos`); await p.waitForSelector('.commit'); await frame(p); r.commitmentsMs = Date.now() - t;
+  r.calcsMs = await p.evaluate(async () => { const c = await import('./js/components/calculator.js'); const repo = await import('./js/database/repository.js'); const t0 = performance.now(); for (const x of repo.list('calculations')) c.calcValue(x); return Math.round(performance.now() - t0); });
+  r.recurrenceGenMs = await p.evaluate(async () => { const { ruleOccurrences } = await import('./js/services/recurrence.js'); const repo = await import('./js/database/repository.js'); const t0 = performance.now(); let n = 0; for (const rule of repo.list('recurrences')) n += ruleOccurrences(rule, '2024-01-01', '2031-12-31').length; return Math.round(performance.now() - t0) + ` ms/${n} ocorrências`; });
   // Backup: leitura consistente + serialização + SHA-256; validação completa; restauração atômica (com snapshot).
   Object.assign(r, await p.evaluate(async () => {
     const repo = await import('./js/database/repository.js');
@@ -81,7 +92,7 @@ for (const N of SIZES) {
   r.heapMB = await p.evaluate(() => { const m = performance.memory?.usedJSHeapSize; return Number.isFinite(m) ? Math.round(m / 1048576) : null; });
   r.errors = errors.length;
   results.push(r);
-  console.log(`N=${String(N).padStart(6)} · abrir ${r.openMs} ms (histórico completo ${r.fullHistoryMs} ms) · trocar mês ${r.monthNavMs} ms · criar ${r.createMs} ms · editar ${r.editMs} ms · buscar ${r.searchMs} ms · projeção 60m ${r.projection60Ms} ms · calendário ${r.calendarMs} ms · visão geral ${r.overviewMs} ms · backup ${r.exportMs} ms (${r.backupMB} MB) · validar ${r.validateMs} ms · restaurar ${r.restoreMs} ms · heap ${r.heapMB} MB · erros ${r.errors}`);
+  console.log(`N=${String(N).padStart(6)} · abrir ${r.openMs} ms (histórico completo ${r.fullHistoryMs} ms) · trocar mês ${r.monthNavMs} ms · criar ${r.createMs} ms · editar ${r.editMs} ms · buscar ${r.searchMs} ms · projeção 60m ${r.projection60Ms} ms · calendário ${r.calendarMs} ms · visão geral ${r.overviewMs} ms · compromissos ${r.commitmentsMs} ms · 10 cálculos dinâmicos ${r.calcsMs} ms · gerar ocorrências 8 anos ${r.recurrenceGenMs} · backup ${r.exportMs} ms (${r.backupMB} MB) · validar ${r.validateMs} ms · restaurar ${r.restoreMs} ms · heap ${r.heapMB} MB · erros ${r.errors}`);
   await context.close();
 }
 await browser.close();

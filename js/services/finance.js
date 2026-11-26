@@ -1,6 +1,6 @@
 import { addMonths, firstDay, lastDay, monthOf, parseISO, daysInMonth, dateInMonth } from '../utils/dates.js';
 import { isCard, billFor, dueDateOf, competenceOf } from './cards.js';
-import { occurrences } from './recurrence.js';
+import { ruleOccurrences, ruleMode } from './recurrence.js';
 
 /*
  * Modelo financeiro
@@ -16,6 +16,14 @@ import { occurrences } from './recurrence.js';
  * • Transferências entre contas e aportes em investimentos não são consumo.
  * • Reembolsos e estornos reduzem a despesa da categoria/bloco/fonte original.
  * • Receitas de benefícios de uso restrito (VA/VR) ficam fora do dinheiro livre.
+ * • Recorrências (qualquer fonte) geram ocorrências PROJETADAS; quando uma é paga,
+ *   editada ou recebe data, vira um lançamento com a mesma chave e a projeção
+ *   correspondente deixa de existir — nunca as duas ao mesmo tempo.
+ * • Previsão mensal (ex.: combustível R$ 400) não é obrigação: os gastos reais
+ *   vinculados a ela consomem o valor planejado; só o RESTANTE entra como
+ *   "previsão restante" (forecastLeft). Excedente não vira previsão negativa.
+ * • Itens sem data (datas flexíveis) contam no mês, mas nunca como atrasados
+ *   nem em um dia inventado do calendário.
  */
 
 export const NONE = '__none__';
@@ -24,17 +32,25 @@ export function createContext({ transactions = [], recurrences = [], accounts = 
   const accountMap = new Map(accounts.map((a) => [a.id, a]));
   const byMonth = new Map();
   const materialized = new Set();
+  const byRule = new Map();       // regra → lançamentos ligados (ocorrências e restantes)
+  const forecastUse = new Map();  // `${regra}|${mês}` → consumo vinculado (centavos)
   const payments = new Map(); // `${cardId}|${billMonth}` → centavos pagos
   for (const tx of transactions) {
     if (!byMonth.has(tx.month)) byMonth.set(tx.month, []);
     byMonth.get(tx.month).push(tx);
-    if (tx.recurrenceId && tx.occurrenceDate) materialized.add(`${tx.recurrenceId}|${tx.occurrenceDate}`);
+    const key = tx.occurrenceKey || tx.occurrenceDate;
+    if (tx.recurrenceId && key) materialized.add(`${tx.recurrenceId}|${key}`);
+    if (tx.recurrenceId) { if (!byRule.has(tx.recurrenceId)) byRule.set(tx.recurrenceId, []); byRule.get(tx.recurrenceId).push(tx); }
+    if (tx.forecastId) {
+      const k = `${tx.forecastId}|${tx.month}`;
+      forecastUse.set(k, (forecastUse.get(k) || 0) + expenseValue(tx));
+    }
     if (tx.type === 'transfer' && tx.status === 'done' && isCard(accountMap.get(tx.toAccountId))) {
-      const key = `${tx.toAccountId}|${tx.billMonth || tx.month}`;
-      payments.set(key, (payments.get(key) || 0) + tx.amount);
+      const k = `${tx.toAccountId}|${tx.billMonth || tx.month}`;
+      payments.set(k, (payments.get(k) || 0) + tx.amount);
     }
   }
-  return { transactions, recurrences, accounts: accountMap, investmentEvents, budgets, goals, prefs, today, byMonth, materialized, payments, cache: new Map() };
+  return { transactions, recurrences, accounts: accountMap, investmentEvents, budgets, goals, prefs, today, byMonth, materialized, byRule, forecastUse, payments, cache: new Map() };
 }
 
 /** Ocorrências virtuais (projetadas, não persistidas) de recorrências no mês. */
@@ -45,26 +61,28 @@ export function virtualItems(ctx, month) {
   for (const rule of ctx.recurrences) {
     if (rule.archived) continue;
     const acc = ctx.accounts.get(rule.sourceId);
-    for (const date of occurrences(rule, from, to)) {
-      if (ctx.materialized.has(`${rule.id}|${date}`)) continue;
-      const m = competenceOf({ type: rule.type, date }, acc);
+    const mode = ruleMode(rule);
+    const base = {
+      virtual: true, recurrenceId: rule.id, type: rule.type, status: 'planned', description: rule.description, amount: rule.amount, month,
+      categoryId: rule.categoryId || null, blockId: rule.blockId || null, sourceId: rule.sourceId || null, restricted: Boolean(rule.restricted),
+      estimated: rule.estimated ? true : undefined, method: rule.method || null,
+    };
+    if (mode === 'forecast') {
+      if (rule.type !== 'expense') continue;
+      for (const o of ruleOccurrences(rule, firstDay(month), to)) {
+        if (rule.closed?.[o.period]) continue;
+        const used = ctx.forecastUse.get(`${rule.id}|${month}`) || 0;
+        const left = Math.max(0, rule.amount - used);
+        if (left <= 0) continue;
+        out.push({ ...base, id: `rec:${rule.id}:${o.key}`, occurrenceKey: o.key, period: o.period, date: null, forecast: true, amount: left, plannedTotal: rule.amount, used });
+      }
+      continue;
+    }
+    for (const o of ruleOccurrences(rule, mode === 'fixed' || mode === 'days' ? from : firstDay(month), to)) {
+      if (ctx.materialized.has(`${rule.id}|${o.key}`)) continue;
+      const m = o.date ? competenceOf({ type: rule.type, date: o.date }, acc) : o.period;
       if (m !== month) continue;
-      out.push({
-        id: `rec:${rule.id}:${date}`,
-        virtual: true,
-        recurrenceId: rule.id,
-        occurrenceDate: date,
-        type: rule.type,
-        status: 'planned',
-        description: rule.description,
-        amount: rule.amount,
-        date,
-        month,
-        categoryId: rule.categoryId || null,
-        blockId: rule.blockId || null,
-        sourceId: rule.sourceId || null,
-        restricted: Boolean(rule.restricted),
-      });
+      out.push({ ...base, id: `rec:${rule.id}:${o.key}`, occurrenceKey: o.key, occurrenceDate: o.date || undefined, period: o.period, slot: mode === 'flex' ? o.index : undefined, date: o.date });
     }
   }
   return out;
@@ -116,8 +134,9 @@ export function summarize(ctx, month) {
     expenseDone: 0, expensePending: 0, expenseTotal: 0, restrictedExpense: 0,
     plannedExpense: 0, overdue: 0,
     transfers: 0,
-    // Decomposição para projeções: fixas (recorrentes), parcelas e pontuais.
-    expFixed: 0, expInstallments: 0, expOneOff: 0,
+    // Decomposição para projeções: fixas (recorrentes), parcelas, pontuais e previsões mensais.
+    expFixed: 0, expInstallments: 0, expOneOff: 0, expForecast: 0,
+    forecastLeft: 0, undatedCount: 0,
   };
   const byRule = new Map(), incomeByRule = new Map();
   const byCategory = new Map(), byBlock = new Map(), bySource = new Map(), byIncomeCategory = new Map();
@@ -139,16 +158,22 @@ export function summarize(ctx, month) {
     if (!v) continue;
     r.expenseTotal += v;
     if (it.planId) r.expInstallments += v;
+    else if (it.forecast || it.forecastId) r.expForecast += v;
     else if (it.recurrenceId) { r.expFixed += v; byRule.set(it.recurrenceId, (byRule.get(it.recurrenceId) || 0) + v); }
     else r.expOneOff += v;
     if (!done) r.plannedExpense += v;
-    if (!done && it.date < ctx.today && v > 0) r.overdue += v;
+    if (!done && it.date && it.date < ctx.today && v > 0) r.overdue += v;
+    if (!it.date) r.undatedCount += 1;
     if (acc?.kind === 'benefit') r.restrictedExpense += v;
     bump(byCategory, it.categoryId || NONE, v, done ? 0 : v);
     bump(byBlock, it.blockId || NONE, v, done ? 0 : v);
     bump(bySource, it.sourceId || NONE, v, done ? 0 : v);
-    const d = days[displayDay(it, month, ctx) - 1];
-    if (done) d.done += v; else d.planned += v;
+    if (it.date) {
+      const d = days[displayDay(it, month, ctx) - 1];
+      if (done) d.done += v; else d.planned += v;
+    }
+    // Restante de previsão mensal: estimativa de consumo, não obrigação nem fatura.
+    if (it.forecast) { r.forecastLeft += v; continue; }
     if (isCard(acc)) {
       const b = bills.get(acc.id) || { cardId: acc.id, total: 0 };
       b.total += v;

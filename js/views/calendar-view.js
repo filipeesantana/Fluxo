@@ -113,8 +113,13 @@ export function renderCalendar(container) {
     ...[['k-income', 'Receita'], ['k-expense', 'Despesa'], ['k-card', 'Compra no cartão'], ['k-bill', 'Fatura'], ['k-invest', 'Aporte']].map(([k, l]) => h('span', { class: 'legend' }, h('i', { class: `cal-dot ${k}` }), l)),
     h('span', { class: 'legend' }, h('i', { class: 'cal-dot is-planned' }), 'Previsto'),
     h('span', { class: 'legend' }, h('i', { class: 'cal-dot is-overdue' }), 'Atrasado'));
+  // Compromissos sem dia definido: aparecem uma vez, à parte, sem inventar uma data.
+  const undatedTotal = cal.undated.filter((it) => it.type !== 'income').reduce((s, it) => s + it.amount, 0);
+  const undated = cal.undated.length ? h('div', { class: 'cal-undated' },
+    h('div', { class: 'day-group-title' }, `Sem data definida · ${formatMoney(undatedTotal)}`, h('span', { class: 'faint' }, ' · contam no mês, fora dos dias')),
+    h('div', { class: 'tx-list', role: 'list' }, ...cal.undated.map((it) => txRow(it, { onOpen: openItem, onMenu: itemMenu, onToggle: toggleStatus })))) : null;
   put(container, h('div', { class: 'cal-layout' },
-    panel('Calendário financeiro', { hint: 'fluxo de caixa por dia; compras no cartão saem do caixa no vencimento da fatura' }, summary, grid, legend),
+    panel('Calendário financeiro', { hint: 'fluxo de caixa por dia; compras no cartão saem do caixa no vencimento da fatura' }, summary, grid, legend, undated),
     dayPanel(cal, selected)));
   return accountName;
 }

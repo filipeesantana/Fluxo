@@ -42,7 +42,7 @@ export function today(now = new Date()) {
 }
 
 export function monthOf(iso) {
-  return iso.slice(0, 7);
+  return iso ? iso.slice(0, 7) : null;
 }
 
 export function currentMonth(now = new Date()) {
@@ -106,11 +106,13 @@ export function formatDate(iso) {
 }
 
 export function formatDateShort(iso) {
+  if (!iso) return 'a definir';
   const { m, d } = parseISO(iso);
   return `${pad(d)} ${MONTHS_SHORT[m - 1]}`;
 }
 
 export function formatDayHeading(iso, todayISO) {
+  if (!iso) return 'Data a definir';
   const { y, m, d } = parseISO(iso);
   const diff = todayISO ? dayDiff(todayISO, iso) : null;
   const rel = diff === 0 ? 'Hoje · ' : diff === -1 ? 'Ontem · ' : diff === 1 ? 'Amanhã · ' : '';

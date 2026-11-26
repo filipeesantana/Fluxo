@@ -52,10 +52,10 @@ for (const seed of [1, 7, 42, 2026, 31337]) {
       // 1. Todos os valores são inteiros (centavos): nenhuma fração aparece em somas.
       for (const k of ['incomeReceived', 'incomeExpected', 'expenseDone', 'expensePending', 'expenseTotal', 'projectedSurplus', 'freeSurplus', 'availableToInvest']) assert.ok(Number.isInteger(s[k]), `${k} inteiro`);
       // 2. Sobra projetada = recebidas + previstas − realizadas − pendentes (mesma conta do detalhamento).
-      assert.equal(s.projectedSurplus, s.incomeReceived + s.incomeExpected - s.expenseDone - s.expensePending);
+      assert.equal(s.projectedSurplus, s.incomeReceived + s.incomeExpected - s.expenseDone - s.expensePending - s.forecastLeft);
       // 3. Despesas totais = realizadas + pendentes = fixas + parcelas + pontuais.
-      assert.equal(s.expenseTotal, s.expenseDone + s.expensePending);
-      assert.equal(s.expenseTotal, s.expFixed + s.expInstallments + s.expOneOff);
+      assert.equal(s.expenseTotal, s.expenseDone + s.expensePending + s.forecastLeft);
+      assert.equal(s.expenseTotal, s.expFixed + s.expInstallments + s.expOneOff + s.expForecast);
       // 4. Distribuições: cada agrupamento soma exatamente o total de despesas.
       for (const g of [s.byCategory, s.byBlock, s.bySource]) assert.equal(g.reduce((t, x) => t + x.total, 0), s.expenseTotal);
       // 5. Cadeia do disponível para investir (nunca negativo).

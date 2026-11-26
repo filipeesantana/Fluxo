@@ -24,7 +24,8 @@ const countsText = (counts) => Object.entries(STORE_LABEL).map(([s, l]) => [l, c
 export async function exportBackup({ password = null } = {}) {
   let data;
   try { data = await repo.readConsistent(); } catch (err) { toastError(err); toast('Não foi possível ler os dados para o backup. Nenhum arquivo foi gerado.', { tone: 'error' }); return false; }
-  const backup = await buildBackup(data);
+  let backup;
+  try { backup = await buildBackup(data); } catch (err) { toastError(err); toast('Não foi possível gerar o backup neste navegador. Nenhum arquivo foi gerado.', { tone: 'error' }); return false; }
   const issues = auditData(data).filter((i) => i.severity === 'error').length;
   const now = new Date();
   let content = backup;

@@ -1,5 +1,77 @@
 # Changelog
 
+## 3.1.0 — Inteligência financeira, flexibilidade e refinamento
+
+Atualização incremental da 3.0: mesma identidade visual, mesmo banco local e mesmas rotas.
+
+### Recorrências universais
+
+- **Qualquer receita ou despesa pode se repetir**, seja paga por Pix, dinheiro, débito, cartão de crédito, vale ou outra fonte. A fonte é independente da recorrência e pode ficar **a definir** até o pagamento.
+- O controle **Repetir** tem preenchimento progressivo: Não repetir · Semanalmente · A cada 14 dias · Mensalmente · Anualmente · Personalizar (a cada N dias, semanas, meses ou anos).
+- **Mensalmente** oferece quatro formas, com nomes simples:
+  - **em um dia específico** (internet todo dia 10);
+  - **em mais de um dia do mês** (dias 5 e 20, cada um com estado próprio);
+  - **com datas flexíveis** (duas consultas por mês: o valor entra no planejamento do mês e as datas ficam a definir, sem datas inventadas);
+  - **como previsão mensal** (combustível até R$ 400: gastos vinculados consomem a previsão, o restante aparece como "restante planejado", o excedente é mostrado e o mês pode ser encerrado sem transformar a sobra em despesa).
+- **A cada 14 dias** usa intervalos reais de calendário: alguns meses têm três ocorrências.
+- Opcionais: início, término (inclusivo), quantidade, dia de vencimento e valor estimado ("a confirmar", sinalizado na interface).
+- **Lançamentos sem data**: compromissos previstos podem ter "data a definir", contam no mês e nunca aparecem como atrasados.
+
+### Compromissos (Planejamento → Compromissos)
+
+- Lista mensal de cada recorrência, com as ocorrências uma a uma: pagar, definir a data, ver o progresso ("1 de 2 pagas · R$ 50 restantes") e recolher os concluídos.
+- **Estados**: previsto, pendente, data a definir, parcialmente pago, pago/recebido, atrasado (calculado pela data), ignorado e cancelado. Ignorar ou cancelar nunca conta como pagamento.
+- **Pagamento simplificado**: o círculo conclui na hora. "Confirmar pagamento…" permite informar data efetiva, valor pago e fonte, inclusive **pagamento parcial**, com o restante continuando previsto. Tudo pode ser desfeito.
+- Cada mês tem seu próprio estado. A edição de séries oferece **somente esta ocorrência**, **somente este mês**, **esta e as próximas** ou **toda a série**.
+
+### Ações em lançamentos
+
+- **Copiar para outro mês** e **Replicar para outros meses** (próximo, 3, 6 ou 12 meses, meses específicos ou intervalo), com o mesmo dia, outro dia ou data a definir. Mostra um resumo antes de confirmar e avisa sobre cópias parecidas. As cópias começam como **previstas**: o "pago" nunca é replicado.
+- **Transformar em recorrente** com qualquer um dos modos. O lançamento original vira a primeira ocorrência, sem cópia.
+- **Calcular com este valor** envia o valor à calculadora.
+
+### Visão geral e personalização
+
+- **Encaixe adaptativo.** Causa dos espaços vazios na 3.0: a grade usava linhas implícitas com `align-items: start`, então cada linha assumia a altura do componente mais alto e os menores deixavam buracos. Agora a grade usa linhas finas de 4 px e cada componente ocupa a altura que realmente tem (medida com ResizeObserver), o que permite encaixar componentes baixos uns sobre os outros ao lado de um alto. São dois modos: **automático** (preenche espaços) e **ordem fixa**.
+- **Organizar automaticamente**: fecha lacunas alargando componentes dentro dos tamanhos permitidos, sem reordenar, e pode ser desfeito.
+- **Ocultos fora da grade**: no modo de edição, ficam numa bandeja e voltam com um clique.
+- **Controles compactos**: alça, título, menu de ajustes (tamanho, formato, cor, restaurar este componente, ocultar) e alça lateral de **redimensionamento** que se encaixa na grade de 12 colunas (também pelo teclado).
+- **Refazer**, além de desfazer. O layout do **celular é salvo à parte** e não altera o do computador.
+- **Formatos de apresentação** por componente: valor simples, valor com composição, evolução mensal, comparação com o mês anterior (aumento de despesa não aparece como algo bom), barras, rosca, tabela, resumo dos maiores, lista, barra de progresso e indicador percentual.
+- **Novos componentes**:
+  - **Compromissos do mês**, em resumo (pendente, próximo vencimento, contas restantes e % pago), lista ou progresso;
+  - **Atenção**, com avisos discretos;
+  - **Destaques**, com alternância opcional, lenta e pausável, desligada com movimento reduzido ou aba em segundo plano.
+- **Avisos discretos e configuráveis**: orçamento ou previsão perto do limite (padrão 80%), limite atingido, excedente, contas atrasadas, vencimentos próximos, déficit projetado e sobra abaixo da margem. Nada pisca e nada se repete.
+
+### Calculadora integrada
+
+- **Porcentagem com semântica explícita**: "10% de 800" = 80, "800 + 10%" = 880, "800 − 10%" = 720, "800 × 10%" = 80. Uma ajuda curta explica as regras.
+- **Ferramentas rápidas**: porcentagem de um valor, acréscimo, desconto, quanto % um valor representa, variação percentual, dividir despesa, valor por parcela, média, renda comprometida, quanto guardar por mês e % da renda.
+- **Usar valores do Fluxo**: sobra projetada, disponível para investir, receitas, despesas, compromissos, patrimônio, total de categoria, bloco ou fonte, saldo de conta, valor ou restante de meta, valor de lançamento e restante de compromisso. O mês de cada valor fica sempre identificado.
+- **Cálculos salvos** no IndexedDB (entram no backup): **estáticos** guardam os valores do momento; **dinâmicos** recalculam com os dados atuais e mostram os valores usados. Se a referência deixar de existir, o cálculo fica "indisponível", nunca vira zero. É possível nomear, editar, duplicar, favoritar, reutilizar, copiar e excluir.
+- **Integração**: "Usar na calculadora" nos indicadores, "Calcular com este valor" nos lançamentos e "Lançamento" para criar um lançamento com o resultado. Nenhum dado é gravado sem confirmação no formulário.
+- **Modo compacto**. A calculadora sempre volta para dentro da tela após mudanças de tamanho.
+
+### Identidade e documentação
+
+- **Assinatura institucional** "Desenvolvido por Filipe Santana" com a versão, no pé do menu lateral. No menu recolhido aparece uma marca discreta ("FS") e, no celular, a assinatura fica no fim da página. Ela não é um componente personalizável.
+- **Versão centralizada** em `js/version.js` (assinatura, Sobre, diagnóstico e backups).
+- **README** reescrito para quem quer usar o Fluxo. As informações técnicas foram para `docs/DEVELOPMENT.md`. A seção **Sobre o Fluxo** foi atualizada.
+
+### Correções
+
+- **Compatibilidade de backups**: com a nova coleção de cálculos, a soma SHA-256 dos backups da 3.0 deixaria de conferir. A verificação agora usa as coleções de cada versão do formato.
+- **Clique duplo** no círculo de pagamento podia pagar e desfazer em seguida. Agora há uma trava por item enquanto a operação está em andamento.
+- **Exceção "cancelada"** passa a ser respeitada também em recorrências de data única.
+- **Arraste**: a grade em refluxo podia disparar reordenações em cascata. A histerese evita saltos inesperados, e soltar num espaço livre usa o componente mais próximo.
+- **Pagamento** preserva o mês de fatura ajustado manualmente.
+
+### Migração
+
+- Esquema do banco **v3 → v4**: cria a coleção `calculations` e um índice único `[recurrenceId, occurrenceKey]`. Só acrescenta: registros antigos não são reescritos, o banco não é apagado nem recriado e o nome interno continua o mesmo.
+- **Backup formato 3** (inclui cálculos salvos). Os formatos 2 (3.0) e legado (1.0/2.0) continuam aceitos.
+
 ## 3.0.0 — Personalização, confiabilidade e segurança
 
 Evolução incremental da 2.0: mesma identidade visual, mesmo banco local e mesmo formato de endereços. Nenhum dado existente é apagado ou recriado.

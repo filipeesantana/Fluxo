@@ -47,6 +47,8 @@ export function closingDateOf(month, card) {
 /** Competência de uma movimentação: respeita a correção manual quando existir. */
 export function competenceOf(tx, account) {
   if (tx.monthManual && tx.month) return tx.month;
+  // Compromisso com data a definir: pertence ao período em que foi planejado.
+  if (!tx.date) return tx.period || tx.month;
   if (isCard(account) && (tx.type === 'expense' || tx.type === 'refund')) return billFor(tx.date, account).month;
   return monthOf(tx.date);
 }

@@ -3,7 +3,7 @@ import { formatMoney } from '../utils/money.js';
 import { currentMonth, today, formatMonth, formatMonthShort, formatDate, addMonths, monthOf } from '../utils/dates.js';
 import * as repo from '../database/repository.js';
 import { projection, summarize, isBillSettled } from '../services/finance.js';
-import { describeFrequency, nextOccurrence } from '../services/recurrence.js';
+import { describeFrequency, nextOccurrence, monthlyAmount, ruleMode } from '../services/recurrence.js';
 import { planProgress } from '../services/installments.js';
 import { isCard } from '../services/cards.js';
 import { progress } from '../components/charts.js';
@@ -17,6 +17,7 @@ import { pageHead, monthNav, categoryName, blockName, accountName, emptyState, c
 import { openRecurrenceForm, endSeries, openItem, itemMenu, toggleStatus } from './actions.js';
 import { budgetRow } from './overview.js';
 import { renderCalendar } from './calendar-view.js';
+import { renderCommitments } from './commitments-view.js';
 import { arrangedList, openArrangeDialog } from '../components/layout.js';
 import { renderProjection, renderScenarios } from './projection-view.js';
 
@@ -29,6 +30,7 @@ const planned = () => openEntryForm({ defaults: { status: 'planned', date: addMo
  */
 export const PLANNING_TABS = [
   { id: 'calendario', label: 'Calendário', icon: 'calendar', month: true, sub: 'Compromissos e movimentações por dia', action: () => h('button', { class: 'btn', type: 'button', onclick: planned }, icon('plus', 'icon-sm'), 'Compromisso futuro'), render: (body) => renderCalendar(body) },
+  { id: 'compromissos', label: 'Compromissos', icon: 'check', month: true, sub: 'Contas do mês, uma a uma: marque o que já foi pago', action: () => h('button', { class: 'btn', type: 'button', onclick: () => openRecurrenceForm() }, icon('plus', 'icon-sm'), 'Nova recorrência'), render: (body) => renderCommitments(body) },
   { id: 'projecao', label: 'Projeção', icon: 'chart', sub: 'Trajetória do orçamento nos próximos meses e anos', action: () => h('button', { class: 'btn', type: 'button', onclick: planned }, icon('plus', 'icon-sm'), 'Despesa programada'), render: (body, rerender) => renderProjection(body, rerender) },
   { id: 'simulacoes', label: 'Simulações', icon: 'branch', sub: 'Teste decisões sem alterar seus registros', action: () => null, render: (body, rerender) => renderScenarios(body, rerender) },
   { id: 'recorrencias', label: 'Recorrências', icon: 'repeat', sub: 'Contas e receitas que se repetem', action: () => h('button', { class: 'btn', type: 'button', onclick: () => openRecurrenceForm() }, icon('plus', 'icon-sm'), 'Nova recorrência'), render: (body) => put(body, recurrences()) },
@@ -94,7 +96,8 @@ function recurrences() {
   const ended = rules.filter((r) => r.endDate && r.endDate < t);
   const section = (title, list, type) => {
     const items = list.filter((r) => r.type === type).sort((a, b) => b.amount - a.amount);
-    const monthly = items.reduce((s, r) => s + (r.frequency === 'monthly' ? r.amount / (r.interval || 1) : r.frequency === 'weekly' ? (r.amount * 52) / 12 / (r.interval || 1) : r.amount / 12 / (r.interval || 1)), 0);
+    // Média mensal: semanal ≈ 52/12 por mês, diária ≈ 365/12; dias/datas flexíveis multiplicam pelas ocorrências do mês.
+    const monthly = items.reduce((s, r) => s + (r.frequency === 'monthly' ? monthlyAmount(r) / (r.interval || 1) : r.frequency === 'weekly' ? (r.amount * 52) / 12 / (r.interval || 1) : r.frequency === 'daily' ? (r.amount * 365) / 12 / (r.interval || 1) : r.amount / 12 / (r.interval || 1)), 0);
     return h('section', { class: 'panel' },
       h('div', { class: 'panel-head' }, h('h2', null, title), items.length ? h('span', { class: 'hint num' }, `≈ ${formatMoney(Math.round(monthly))} por mês`) : null),
       items.length ? h('div', { class: 'table-wrap' }, h('table', { class: 'table' },
@@ -112,9 +115,9 @@ function recurrences() {
           return h('tr', { class: 'is-link', onclick: () => openRecurrenceForm({ rule: r }) },
             h('td', null, r.description),
             h('td', { class: 'faint' }, describeFrequency(r), r.endDate ? ` · até ${formatDate(r.endDate)}` : ''),
-            h('td', { class: 'num' }, next ? formatDate(next) : '—'),
+            h('td', { class: 'num' }, next ? formatDate(next) : ruleMode(r) === 'flex' ? 'datas a definir' : ruleMode(r) === 'forecast' ? 'mensal' : '—'),
             h('td', { class: 'faint truncate' }, [r.categoryId && categoryName(r.categoryId), r.blockId && blockName(r.blockId), r.sourceId && accountName(r.sourceId)].filter(Boolean).join(' · ') || '—'),
-            h('td', { class: `right num ${type === 'income' ? 'pos' : ''}` }, formatMoney(r.amount)),
+            h('td', { class: `right num ${type === 'income' ? 'pos' : ''}` }, formatMoney(r.amount), ruleMode(r) === 'days' || ruleMode(r) === 'flex' ? h('span', { class: 'faint small' }, ` × ${ruleMode(r) === 'days' ? r.days.length : r.perPeriod}`) : null, r.estimated ? h('span', { class: 'tag tag-soft' }, 'estimado') : null),
             h('td', { class: 'right' }, more));
         })))) : h('p', { class: 'empty-line' }, type === 'income' ? 'Nenhuma receita recorrente. Cadastre salário, benefícios ou rendas fixas.' : 'Nenhuma conta recorrente. Ex.: internet, plano de saúde, plano móvel.'));
   };
@@ -133,7 +136,7 @@ async function removeRule(r) {
 function scheduled() {
   const t = today();
   const items = repo.list('transactions').filter((x) => x.status === 'planned' && !x.recurrenceId && !x.planId && x.month >= monthOf(t) && x.type !== 'transfer')
-    .sort((a, b) => (a.month < b.month ? -1 : a.month > b.month ? 1 : a.date < b.date ? -1 : 1));
+    .sort((a, b) => (a.month < b.month ? -1 : a.month > b.month ? 1 : (a.date || '9') < (b.date || '9') ? -1 : 1));
   if (!items.length) return h('section', { class: 'panel' }, emptyState('Nenhum gasto programado', 'Registre compras planejadas, viagens, manutenções ou cursos para ver o impacto nos meses correspondentes.'));
   const ctx = repo.context();
   const byMonth = new Map();
