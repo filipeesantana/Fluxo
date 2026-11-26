@@ -16,8 +16,19 @@ export function applyTheme(pref = currentThemePref()) {
   const root = document.documentElement;
   root.classList.add('theme-switching');
   root.dataset.theme = resolve(pref);
-  document.querySelectorAll('meta[name="theme-color"]').forEach((m) => m.setAttribute('content', root.dataset.theme === 'dark' ? '#111214' : '#f6f6f7'));
+  document.querySelectorAll('meta[name="theme-color"]').forEach((m) => m.setAttribute('content', root.dataset.theme === 'dark' ? '#0e0f11' : '#f2f2f4'));
   requestAnimationFrame(() => requestAnimationFrame(() => root.classList.remove('theme-switching')));
+  document.dispatchEvent(new CustomEvent('gf:theme'));
+}
+
+export function currentMotionPref() {
+  return readPref('motion', 'system') === 'reduced' ? 'reduced' : 'system';
+}
+
+export function applyMotion(pref) {
+  writePref('motion', pref);
+  if (pref === 'reduced') document.documentElement.dataset.motion = 'reduced';
+  else delete document.documentElement.dataset.motion;
 }
 
 export function initTheme() {

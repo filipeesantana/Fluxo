@@ -3,22 +3,35 @@ import { formatMoney } from '../utils/money.js';
 import { formatDayHeading, today, formatMonth } from '../utils/dates.js';
 import * as repo from '../database/repository.js';
 import { monthItems, expenseValue, NONE } from '../services/finance.js';
-import { matches } from '../services/suggest.js';
+import { fold } from '../services/suggest.js';
 import { openEntryForm } from '../components/entry-form.js';
 import { ui, emitUI, resetEntriesFilter } from '../state.js';
-import { monthNav, pageHead, txRow, categoryName, blockName, accountName, emptyState, categoryOptions, blockOptions, accountOptions, capitalize } from './common.js';
+import { monthNav, pageHead, panel, investRow, txRow, categoryName, blockName, accountName, emptyState, categoryOptions, blockOptions, accountOptions, capitalize } from './common.js';
 import { openItem, itemMenu, toggleStatus } from './actions.js';
 
 const PAGE = 150;
 let shown = PAGE;
 let lastKey = '';
+// Índice de busca: texto normalizado por movimentação, refeito quando os dados mudam.
+let searchCtx = null;
+let searchCache = new WeakMap();
+function searchText(t, ctx) {
+  if (searchCtx !== ctx) { searchCtx = ctx; searchCache = new WeakMap(); }
+  let v = searchCache.get(t);
+  if (v === undefined) {
+    v = fold([t.description, categoryName(t.categoryId), blockName(t.blockId), accountName(t.sourceId), t.note || ''].join(' | '));
+    searchCache.set(t, v);
+  }
+  return v;
+}
 
 function filterItems() {
   const f = ui.entries;
   const ctx = repo.context();
   let items = f.scope === 'month' ? monthItems(ctx, ui.month) : repo.list('transactions');
-  const q = f.query.trim();
-  const nums = q.replace(/[^\d,.]/g, '');
+  const q = fold(f.query.trim());
+  const nums = f.query.replace(/[^\d,.]/g, '');
+  if (f.type === 'invest') return [];
   items = items.filter((t) => {
     if (f.type === 'expenses' && !(t.type === 'expense' || t.type === 'refund')) return false;
     if (f.type && f.type !== 'expenses' && t.type !== f.type) return false;
@@ -28,7 +41,7 @@ function filterItems() {
     if (f.sourceId && (f.sourceId === NONE ? t.sourceId : t.sourceId !== f.sourceId)) return false;
     if (q) {
       const amountMatch = nums && formatMoney(t.amount).includes(nums);
-      if (!amountMatch && !matches(q, t.description, categoryName(t.categoryId), blockName(t.blockId), accountName(t.sourceId), t.note)) return false;
+      if (!amountMatch && !searchText(t, ctx).includes(q)) return false;
     }
     return true;
   });
@@ -70,7 +83,7 @@ export function renderEntries(root) {
     ...[['month', 'Mês selecionado'], ['all', 'Todos os meses']].map(([v, l]) => h('button', { type: 'button', role: 'radio', class: 'seg', 'aria-checked': String(f.scope === v), onclick: () => { f.scope = v; emitUI('filter'); } }, l)));
 
   const type = h('select', { class: 'select select-sm', 'aria-label': 'Tipo' },
-    ...[['', 'Todos os tipos'], ['expenses', 'Despesas e reembolsos'], ['expense', 'Somente despesas'], ['income', 'Receitas'], ['transfer', 'Transferências'], ['refund', 'Reembolsos']].map(([v, l]) => h('option', { value: v }, l)));
+    ...[['', 'Todos os tipos'], ['expenses', 'Despesas e reembolsos'], ['expense', 'Somente despesas'], ['income', 'Receitas'], ['transfer', 'Transferências'], ['refund', 'Reembolsos'], ['invest', 'Aportes e resgates']].map(([v, l]) => h('option', { value: v }, l)));
   type.value = f.type;
   type.addEventListener('change', () => { f.type = type.value; emitUI('filter'); });
   const status = h('select', { class: 'select select-sm', 'aria-label': 'Situação' }, h('option', { value: '' }, 'Toda situação'), h('option', { value: 'done' }, 'Realizados'), h('option', { value: 'planned' }, 'Previstos'));
@@ -95,8 +108,7 @@ export function renderEntries(root) {
       active.length ? h('button', { class: 'btn btn-ghost btn-sm', type: 'button', onclick: () => { resetEntriesFilter(); emitUI('filter'); } }, icon('x', 'icon-sm'), 'Limpar filtros') : null),
   );
 
-  const head = pageHead('Lançamentos', f.scope === 'month' ? monthNav() : h('span', { class: 'faint' }, 'Histórico completo'), h('span', { class: 'spacer' }),
-    h('button', { class: 'btn btn-primary btn-new-entry', type: 'button', onclick: () => openEntryForm() }, icon('plus'), 'Novo lançamento'));
+  const head = pageHead('Lançamentos', { sub: f.scope === 'month' ? 'Movimentações do mês selecionado' : 'Histórico completo de todos os meses', controls: f.scope === 'month' ? monthNav() : null });
 
   const summary = h('div', { class: 'list-summary small' },
     h('span', null, `${items.length} ${items.length === 1 ? 'lançamento' : 'lançamentos'}`),
@@ -128,14 +140,23 @@ export function renderEntries(root) {
     if (f.groupBy !== 'day') entries.sort((a, b) => totals(b[1]).expense - totals(a[1]).expense);
     for (const [k, rows] of entries) {
       const tt = totals(rows);
-      list.append(h('div', { class: 'tx-day' }, h('span', null, f.groupBy === 'day' && f.scope === 'all' ? capitalize(groupLabel(k)) : capitalize(groupLabel(k))),
-        h('span', { class: 'num faint' }, tt.expense ? `− ${formatMoney(tt.expense)}` : tt.income ? `+ ${formatMoney(tt.income)}` : '')));
+      const parts = [];
+      if (tt.income) parts.push(`+ ${formatMoney(tt.income)}`);
+      if (tt.expense) parts.push(`− ${formatMoney(tt.expense)}`);
+      list.append(h('div', { class: 'tx-day' }, h('span', null, capitalize(groupLabel(k))),
+        parts.length ? h('span', { class: 'tx-day-total', title: f.groupBy === 'day' ? 'Total do dia' : 'Total do grupo' }, parts.join('  ·  ')) : null));
       for (const it of rows) list.append(txRow(it, { onOpen: openItem, onMenu: itemMenu, onToggle: toggleStatus, showDate: f.groupBy !== 'day' }));
     }
   } else {
     for (const it of visible) list.append(txRow(it, { onOpen: openItem, onMenu: itemMenu, onToggle: toggleStatus, showDate: true }));
   }
 
+  if (f.type === 'invest') {
+    const evs = repo.list('investmentEvents').filter((e) => e.type !== 'balance' && (f.scope === 'all' || e.date.slice(0, 7) === ui.month)).sort((a, b) => (a.date < b.date ? 1 : -1));
+    put(root, head, filters, h('section', { class: 'panel' }, evs.length ? h('div', { class: 'tx-list', role: 'list' }, ...evs.map((e) => investRow(e)))
+      : emptyState('Nenhum aporte ou resgate', 'Aportes são registrados em Investimentos e não contam como despesa de consumo.', h('a', { class: 'btn', href: '#/investimentos' }, 'Ir para Investimentos'))));
+    return;
+  }
   const content = items.length ? [summary, list,
     items.length > shown ? h('button', { class: 'btn btn-block load-more', type: 'button', onclick: () => { shown += PAGE * 2; emitUI('filter'); } }, `Mostrar mais (${items.length - shown} restantes)`) : null]
     : [emptyState(active.length ? 'Nada encontrado com estes filtros' : 'Nenhum lançamento', active.length ? null : f.scope === 'month' ? `Não há movimentações em ${formatMonth(ui.month)}.` : 'Registre o primeiro lançamento.',
@@ -143,6 +164,7 @@ export function renderEntries(root) {
 
   const hadFocus = document.activeElement?.id === 'entries-search';
   const caret = hadFocus ? document.activeElement.selectionStart : null;
-  put(root, head, filters, ...content);
+  const loadingNote = f.scope === 'all' && !repo.isFullyLoaded() ? h('p', { class: 'note' }, icon('clock', 'icon-sm'), 'Carregando o histórico completo…') : null;
+  put(root, head, filters, h('section', { class: 'panel' }, loadingNote, ...content));
   if (hadFocus) { const s = document.getElementById('entries-search'); s.focus(); try { s.setSelectionRange(caret, caret); } catch { /* type=search */ } }
 }

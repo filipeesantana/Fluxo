@@ -63,12 +63,63 @@ export function projectSeries(initial, monthly, i, months, timing = 'end') {
   return series;
 }
 
-export function simulateGoal(goal, { fromMonth } = {}) {
+/** Taxa mensal de uma meta: opcional (0% por padrão), anual efetiva ou mensal. */
+export function goalRate(goal) {
+  const r = Number(goal.annualRate) || 0;
+  if (!r) return 0;
+  return goal.rateMode === 'monthly' ? r / 100 : monthlyRate(r);
+}
+
+/**
+ * Simulação mês a mês com aportes variáveis: contribution(k) devolve o aporte
+ * do mês k (1, 2, …). Usada para aportes extraordinários e para "usar a sobra
+ * projetada de cada mês".
+ */
+export function simulateSchedule({ initial, target, i = 0, timing = 'end', contribution, maxMonths = MAX_MONTHS }) {
+  let v = initial, c = initial;
+  const series = [{ n: 0, value: v, contributed: c }];
+  let reachedAt = initial >= target ? 0 : null;
+  for (let n = 1; n <= maxMonths; n++) {
+    const pmt = Math.max(0, contribution(n) || 0);
+    v = timing === 'start' ? (v + pmt) * (1 + i) : v * (1 + i) + pmt;
+    c += pmt;
+    series.push({ n, value: v, contributed: c });
+    if (reachedAt === null && v >= target - 1e-6) reachedAt = n;
+    if (reachedAt !== null) break;
+  }
+  return { months: reachedAt, series };
+}
+
+export function simulateGoal(goal, { fromMonth, contributionAt } = {}) {
   const target = goal.target || 0;
   const initial = goal.initial || 0;
   const monthly = goal.monthly || 0;
   const timing = goal.timing === 'start' ? 'start' : 'end';
-  const i = monthlyRate(goal.annualRate || 0);
+  const i = goalRate(goal);
+  const extras = Array.isArray(goal.extras) ? goal.extras.filter((e) => e && e.amount > 0 && e.month) : [];
+  const startM = goal.startMonth || fromMonth;
+  if (extras.length || contributionAt) {
+    const byMonth = new Map();
+    for (const e of extras) byMonth.set(e.month, (byMonth.get(e.month) || 0) + e.amount);
+    const contribution = (n) => (contributionAt ? contributionAt(n) : monthly) + (byMonth.get(addMonths(startM, n - 1)) || 0);
+    const sch = simulateSchedule({ initial, target, i, timing, contribution });
+    const n = sch.months;
+    const last = sch.series[n ?? Math.min(sch.series.length - 1, 360)];
+    const res = { i, timing, reached: initial >= target, months: n, reachable: n !== null, schedule: true, series: sch.series };
+    res.completionMonth = n !== null ? addMonths(startM, n) : null;
+    res.horizon = n ?? Math.min(sch.series.length - 1, 360);
+    res.projected = last.value;
+    res.contributed = last.contributed;
+    res.earnings = res.projected - res.contributed;
+    res.remaining = Math.max(0, target - initial);
+    if (goal.deadline) {
+      const dn = monthDiff(startM, goal.deadline);
+      res.deadlineMonths = dn;
+      res.requiredMonthly = dn > 0 ? requiredMonthly(target, initial, i, dn, timing) : (res.reached ? 0 : Infinity);
+      res.onTrack = n !== null && n <= dn;
+    }
+    return res;
+  }
   const start = goal.startMonth || fromMonth;
   const months = monthsToTarget(target, initial, monthly, i, timing);
   const reached = initial >= target;

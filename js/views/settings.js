@@ -10,26 +10,61 @@ import { openModal, confirmDialog } from '../components/modal.js';
 import { toast, toastError } from '../components/toast.js';
 import { field, moneyInput, segmented, intInput, readInt } from '../components/fields.js';
 import { openMenu } from '../components/menu.js';
-import { pageHead, ACCOUNT_KINDS, accountOptions } from './common.js';
-import { applyTheme, currentThemePref } from '../theme.js';
+import { pageHead, ACCOUNT_KINDS, ACCOUNT_ICON, accountOptions } from './common.js';
+import { applyTheme, currentThemePref, applyMotion, currentMotionPref } from '../theme.js';
+import { auditData } from '../services/integrity.js';
+import { openEntryForm } from '../components/entry-form.js';
 
 const STORE_LABEL = { transactions: 'lançamentos', categories: 'categorias', blocks: 'blocos', accounts: 'contas e cartões', recurrences: 'recorrências', installmentPlans: 'parcelamentos', budgets: 'orçamentos', investments: 'investimentos', investmentEvents: 'registros de investimento', goals: 'metas' };
 
-export function renderSettings(root) {
-  put(root, pageHead('Configurações'),
-    appearance(), accounts(), namedSection('categories', 'Categorias', 'Natureza da despesa ou receita'), namedSection('blocks', 'Blocos', 'Contexto do gasto: pessoal, casa, moto, faculdade…'),
-    planning(), dataSection(), shortcuts(), about());
+const GROUPS = [
+  ['aparencia', 'Aparência', 'palette'],
+  ['financeiro', 'Preferências financeiras', 'sliders'],
+  ['contas', 'Contas e cartões', 'card'],
+  ['classificacao', 'Categorias e blocos', 'tag'],
+  ['dados', 'Dados e backup', 'database'],
+  ['integridade', 'Integridade dos registros', 'shield'],
+  ['atalhos', 'Atalhos e sobre', 'info'],
+];
+
+export function renderSettings(root, sub) {
+  const nav = h('nav', { class: 'settings-nav', 'aria-label': 'Grupos de configurações' },
+    ...GROUPS.map(([id, label, ic]) => h('a', { href: `#/configuracoes/${id}`, dataset: { group: id }, class: sub === id ? 'is-active' : '', onclick: (ev) => { ev.preventDefault(); document.getElementById(`cfg-${id}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' }); nav.querySelectorAll('a').forEach((x) => x.classList.toggle('is-active', x === ev.currentTarget)); } }, icon(ic), label)));
+  const groups = [
+    group('aparencia', 'Aparência', 'Tema e movimento. Preferências deste navegador.', appearance()),
+    group('financeiro', 'Preferências financeiras', 'Usadas nos cálculos de sobra e projeção.', planning()),
+    group('contas', 'Contas e cartões', 'Fontes de pagamento. Cartões com fechamento e vencimento calculam as faturas sozinhos.', accounts()),
+    group('classificacao', 'Categorias e blocos', 'Categoria é a natureza do gasto; bloco é o contexto (pessoal, casa, moto…).', namedSection('categories', 'Categorias'), namedSection('blocks', 'Blocos')),
+    group('dados', 'Dados e backup', 'Seus dados ficam somente neste navegador, neste dispositivo.', dataSection()),
+    group('integridade', 'Integridade dos registros', 'Revisão de possíveis duplicidades e inconsistências. Nada é alterado automaticamente.', integrity()),
+    group('atalhos', 'Atalhos e sobre', null, shortcuts(), about()),
+  ];
+  put(root, pageHead('Configurações', { sub: 'Preferências, cadastros e dados' }), h('div', { class: 'settings-layout' }, nav, h('div', { class: 'stack-lg' }, ...groups)));
+  if (sub) requestAnimationFrame(() => document.getElementById(`cfg-${sub}`)?.scrollIntoView({ block: 'start' }));
+}
+
+function group(id, title, hint, ...children) {
+  return h('section', { class: 'panel settings-group', id: `cfg-${id}` },
+    h('div', { class: 'panel-head' }, h('h2', null, title), hint ? h('p', null, hint) : null),
+    h('div', { class: 'stack-lg' }, ...children));
 }
 
 function section(title, hint, ...children) {
-  return h('section', { class: 'section settings-section' },
-    h('div', { class: 'settings-side' }, h('h2', null, title), hint ? h('p', { class: 'faint small' }, hint) : null),
-    h('div', { class: 'settings-main' }, ...children));
+  return h('div', { class: 'stack' }, title ? h('h3', null, title) : null, hint ? h('p', { class: 'faint small' }, hint) : null, ...children);
+}
+
+function settingsRow(label, desc, control) {
+  return h('div', { class: 'settings-row' }, h('div', { class: 'label' }, h('strong', null, label), desc ? h('span', null, desc) : null), control);
 }
 
 function appearance() {
   const seg = segmented({ label: 'Tema', value: currentThemePref(), options: [{ value: 'system', label: 'Sistema', icon: 'monitor' }, { value: 'light', label: 'Claro', icon: 'sun' }, { value: 'dark', label: 'Escuro', icon: 'moon' }], onChange: (v) => applyTheme(v) });
-  return section('Aparência', 'A preferência fica salva neste navegador.', seg);
+  const motion = segmented({ label: 'Animações', value: currentMotionPref(), options: [{ value: 'system', label: 'Padrão' }, { value: 'reduced', label: 'Reduzidas' }], onChange: (v) => { applyMotion(v); toast(v === 'reduced' ? 'Animações reduzidas' : 'Animações padrão'); } });
+  const collapsed = segmented({ label: 'Menu lateral', value: document.documentElement.classList.contains('sidebar-collapsed') ? 'collapsed' : 'expanded', options: [{ value: 'expanded', label: 'Expandido' }, { value: 'collapsed', label: 'Recolhido' }], onChange: (v) => document.querySelector('[data-action="collapse"]')?.click() });
+  return h('div', null,
+    settingsRow('Tema', 'Sistema acompanha a preferência do sistema operacional.', seg),
+    settingsRow('Animações', 'Reduzidas desliga transições; o sistema também é respeitado.', motion),
+    settingsRow('Menu lateral', 'Recolhido mostra só ícones. Atalho: [', collapsed));
 }
 
 // ——— Contas e cartões ———
@@ -41,17 +76,17 @@ function accounts() {
     const card = a.kind === 'credit';
     const info = card
       ? (a.closingDay && a.dueDay ? `fecha dia ${a.closingDay} · vence dia ${a.dueDay}${a.limit ? ` · limite ${formatMoney(a.limit)}` : ''}` : 'fechamento e vencimento não configurados')
-      : `saldo ${formatMoney(bal.get(a.id) || 0)}`;
+      : repo.isFullyLoaded() ? `saldo ${formatMoney(bal.get(a.id) || 0)}` : 'saldo: carregando histórico…';
     const more = h('button', { class: 'btn btn-ghost btn-icon btn-sm', type: 'button', 'aria-label': `Ações de ${a.name}` }, icon('more'));
     more.addEventListener('click', () => openMenu(more, archiveMenu('accounts', a, () => openAccountForm(a))));
     return h('div', { class: `list-row${a.archived ? ' is-archived' : ''}` },
-      h('span', { class: 'list-icon' }, icon(card ? 'card' : 'layers', 'icon-sm')),
+      h('span', { class: 'list-icon' }, icon(ACCOUNT_ICON[a.kind] || 'wallet', 'icon-sm')),
       h('button', { class: 'list-main', type: 'button', onclick: () => openAccountForm(a) },
         h('span', { class: 'truncate' }, a.name, a.archived ? h('span', { class: 'faint' }, ' · arquivada') : null),
         h('span', { class: 'faint small truncate' }, `${ACCOUNT_KINDS[a.kind]} · ${info}`)),
       more);
   });
-  return section('Contas e cartões', 'Fontes de pagamento. Cartões com fechamento e vencimento calculam faturas automaticamente.',
+  return section(null, null,
     h('div', { class: 'list' }, ...rows, rows.length ? null : h('p', { class: 'empty-line' }, 'Nenhuma conta ou cartão cadastrado.')),
     h('button', { class: 'btn', type: 'button', onclick: () => openAccountForm() }, icon('plus', 'icon-sm'), 'Adicionar conta ou cartão'));
 }
@@ -109,7 +144,7 @@ function openAccountForm(a = null) {
 
 // ——— Categorias e blocos ———
 
-function namedSection(store, title, hint) {
+function namedSection(store, title, hint = null) {
   const all = repo.list(store).sort((a, b) => Number(a.archived) - Number(b.archived) || (a.order ?? 1e9) - (b.order ?? 1e9) || a.name.localeCompare(b.name, 'pt-BR'));
   const groups = store === 'categories' ? [['expense', 'Despesas'], ['income', 'Receitas']] : [[null, null]];
   const body = groups.map(([type, label]) => {
@@ -154,7 +189,42 @@ function planning() {
     if (v < 0) return;
     try { await repo.setPrefs({ safetyMargin: v }); toast('Margem de segurança salva'); } catch (err) { toastError(err); }
   });
-  return section('Planejamento', 'Reserva mensal descontada do valor disponível para aportes.', field('Margem de segurança mensal', margin, { hint: 'Ex.: R$ 200,00 para imprevistos' }));
+  const variable = moneyInput({ value: prefs.variableEstimate || 0, allowZero: true });
+  variable.input.addEventListener('change', async () => {
+    const v = variable.getValue() ?? 0;
+    if (v < 0) return;
+    try { await repo.setPrefs({ variableEstimate: v }); toast('Estimativa de gastos variáveis salva'); } catch (err) { toastError(err); }
+  });
+  margin.style.width = variable.style.width = '220px';
+  return h('div', null,
+    settingsRow('Margem de segurança mensal', 'Reserva descontada do valor disponível para investir.', margin),
+    settingsRow('Gastos variáveis estimados', 'Aplicados às projeções dos próximos meses (mercado, lazer, transporte…).', variable));
+}
+
+// ——— Integridade ———
+
+function integrity() {
+  const out = h('div', { class: 'stack' });
+  const LABEL = { duplicate: 'Possível duplicidade', ref: 'Referência inválida', plan: 'Parcelamento', recurrence: 'Recorrência', orphan: 'Registro órfão' };
+  const run = async () => {
+    if (!repo.isFullyLoaded()) put(out, h('p', { class: 'faint small' }, 'Carregando o histórico completo…'));
+    const issues = auditData(await repo.fullSnapshot());
+    if (!issues.length) { put(out, h('div', { class: 'audit-ok' }, icon('check', 'icon-sm'), 'Nenhuma inconsistência encontrada.')); return; }
+    const shown = issues.slice(0, 60);
+    put(out,
+      h('p', { class: 'small muted' }, `${issues.length} ${issues.length === 1 ? 'ocorrência encontrada' : 'ocorrências encontradas'}. Revise cada uma; lançamentos idênticos podem ser legítimos.`),
+      h('div', { class: 'audit-list' }, ...shown.map((it) => {
+        const tx = it.refs.map((id) => repo.get('transactions', id)).filter(Boolean);
+        return h('div', { class: 'audit-item' },
+          h('span', { class: `sev ${it.severity}`, title: it.severity }),
+          h('span', null, h('strong', { class: 'small' }, LABEL[it.type] || it.type), h('br'), h('span', { class: 'small muted' }, it.message),
+            tx.length ? h('span', { class: 'faint xsmall' }, ` · ${tx.map((t) => `${formatDate(t.date)} ${formatMoney(t.amount)}`).join(' / ')}`) : null),
+          tx.length ? h('div', { class: 'row' }, ...tx.slice(0, 3).map((t, i) => h('button', { class: 'btn btn-sm', type: 'button', onclick: () => openEntryForm({ tx: t }) }, tx.length > 1 ? `Abrir ${i + 1}` : 'Abrir'))) : h('span'));
+      })),
+      issues.length > shown.length ? h('p', { class: 'faint small' }, `… e mais ${issues.length - shown.length}.`) : null);
+  };
+  run();
+  return h('div', { class: 'stack-lg' }, out, h('div', null, h('button', { class: 'btn', type: 'button', onclick: async () => { await run(); toast('Verificação concluída'); } }, icon('shield', 'icon-sm'), 'Verificar novamente')));
 }
 
 // ——— Dados ———
@@ -169,7 +239,7 @@ function dataSection() {
   storageEstimate().then((e) => { if (e?.usage != null) usage.textContent = `Uso aproximado: ${(e.usage / 1024 / 1024).toFixed(1).replace('.', ',')} MB`; });
   const file = h('input', { type: 'file', accept: 'application/json,.json', hidden: true, onchange: (ev) => { const f = ev.target.files[0]; ev.target.value = ''; if (f) importFile(f); } });
   const counts = Object.entries(STORE_LABEL).map(([s, l]) => [l, repo.list(s).length]).filter(([, n]) => n);
-  return section('Dados e backup', 'Seus dados ficam somente neste navegador, neste dispositivo.',
+  return section(null, null,
     h('div', { class: 'notice' }, icon('alert', 'icon-sm'), h('p', null, 'Nada é enviado para servidores. Limpar os dados do site, usar navegação privada ou trocar de navegador pode apagar as informações. O IndexedDB não é criptografado: faça backups regulares e guarde-os em local seguro.')),
     h('div', { class: 'row wrap' },
       h('button', { class: 'btn', type: 'button', onclick: exportJSON }, icon('download', 'icon-sm'), 'Exportar backup (JSON)'),
@@ -183,15 +253,16 @@ function dataSection() {
 
 function renderAgain() { window.dispatchEvent(new HashChangeEvent('hashchange')); }
 
-export function exportJSON() {
-  const b = buildBackup(repo.snapshot());
-  downloadFile(`guia-financeiro-backup-${today()}.json`, JSON.stringify(b, null, 1), 'application/json');
+export async function exportJSON() {
+  const b = buildBackup(await repo.fullSnapshot());
+  downloadFile(`fluxo-backup-${today()}.json`, JSON.stringify(b, null, 1), 'application/json');
   toast('Backup exportado', { tone: 'success' });
 }
 
-function exportCSV() {
+async function exportCSV() {
+  await repo.whenFullyLoaded();
   const maps = { categories: new Map(repo.list('categories').map((c) => [c.id, c])), blocks: new Map(repo.list('blocks').map((c) => [c.id, c])), accounts: new Map(repo.list('accounts').map((c) => [c.id, c])) };
-  downloadFile(`guia-financeiro-lancamentos-${today()}.csv`, transactionsToCSV(repo.list('transactions'), maps), 'text/csv;charset=utf-8');
+  downloadFile(`fluxo-lancamentos-${today()}.csv`, transactionsToCSV(repo.list('transactions'), maps), 'text/csv;charset=utf-8');
   toast('CSV exportado', { tone: 'success' });
 }
 
@@ -220,7 +291,7 @@ async function importFile(file) {
   const ok = await confirmDialog({ title: 'Restaurar backup?', message: 'A base atual será substituída pelo conteúdo do backup em uma única operação. Se algo falhar, nada é alterado.', confirmLabel: 'Restaurar', danger: true, details });
   if (!ok) return;
   try {
-    if (keepCopy.checked && !repo.isEmpty()) exportJSON();
+    if (keepCopy.checked && !repo.isEmpty()) await exportJSON();
     await repo.importData(res.backup.data);
     toast('Backup restaurado', { tone: 'success' });
   } catch (err) { toastError(err); toast('A restauração falhou; os dados anteriores foram preservados.', { tone: 'error' }); }
@@ -238,10 +309,10 @@ async function wipe() {
 }
 
 function shortcuts() {
-  const list = [['N', 'Novo lançamento'], ['C', 'Calculadora (Alt+C dentro de campos)'], ['/', 'Buscar lançamentos'], ['← →', 'Mês anterior / próximo'], ['T', 'Voltar ao mês atual'], ['1–5', 'Ir para cada seção'], ['Shift+Enter', 'Salvar e criar outro'], ['Ctrl+Enter', 'Inserir resultado da calculadora no campo'], ['Esc', 'Fechar janelas']];
+  const list = [['[', 'Recolher ou expandir o menu'], ['Ctrl+Enter', 'Salvar o formulário aberto'], ['N', 'Novo lançamento'], ['C', 'Calculadora (Alt+C dentro de campos)'], ['/', 'Buscar lançamentos'], ['← →', 'Mês anterior / próximo'], ['T', 'Voltar ao mês atual'], ['1–5', 'Ir para cada seção'], ['Shift+Enter', 'Salvar e criar outro'], ['Ctrl+Enter', 'Na calculadora: inserir o resultado no campo'], ['Esc', 'Fechar janelas']];
   return section('Atalhos de teclado', null, h('div', { class: 'shortcuts' }, ...list.map(([k, l]) => h('div', { class: 'shortcut' }, h('span', { class: 'keys' }, ...k.split(' ').map((x) => h('kbd', null, x))), h('span', { class: 'muted small' }, l)))));
 }
 
 function about() {
-  return section('Sobre', null, h('p', { class: 'faint small' }, `Guia Financeiro ${APP_VERSION} · esquema de dados v${DB_VERSION} · banco “${DB_NAME}”. Aplicação local-first: sem contas, sem servidores, sem telemetria.`));
+  return section('Sobre', null, h('p', { class: 'faint small' }, `Fluxo ${APP_VERSION} · esquema de dados v${DB_VERSION} · banco “${DB_NAME}”. Aplicação local-first: sem contas, sem servidores, sem telemetria.`));
 }

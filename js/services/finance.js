@@ -116,7 +116,10 @@ export function summarize(ctx, month) {
     expenseDone: 0, expensePending: 0, expenseTotal: 0, restrictedExpense: 0,
     plannedExpense: 0, overdue: 0,
     transfers: 0,
+    // Decomposição para projeções: fixas (recorrentes), parcelas e pontuais.
+    expFixed: 0, expInstallments: 0, expOneOff: 0,
   };
+  const byRule = new Map(), incomeByRule = new Map();
   const byCategory = new Map(), byBlock = new Map(), bySource = new Map(), byIncomeCategory = new Map();
   const bills = new Map();
   const days = Array.from({ length: daysInMonth(...month.split('-').map(Number)) }, (_, i) => ({ day: i + 1, done: 0, planned: 0 }));
@@ -127,6 +130,7 @@ export function summarize(ctx, month) {
     if (it.type === 'income') {
       if (done) r.incomeReceived += it.amount; else r.incomeExpected += it.amount;
       if (isRestrictedIncome(it, ctx)) r.restrictedIncome += it.amount;
+      if (it.recurrenceId) incomeByRule.set(it.recurrenceId, (incomeByRule.get(it.recurrenceId) || 0) + it.amount);
       bump(byIncomeCategory, it.categoryId || NONE, it.amount, done ? 0 : it.amount);
       continue;
     }
@@ -134,6 +138,9 @@ export function summarize(ctx, month) {
     const v = expenseValue(it);
     if (!v) continue;
     r.expenseTotal += v;
+    if (it.planId) r.expInstallments += v;
+    else if (it.recurrenceId) { r.expFixed += v; byRule.set(it.recurrenceId, (byRule.get(it.recurrenceId) || 0) + v); }
+    else r.expOneOff += v;
     if (!done) r.plannedExpense += v;
     if (!done && it.date < ctx.today && v > 0) r.overdue += v;
     if (acc?.kind === 'benefit') r.restrictedExpense += v;
@@ -187,6 +194,8 @@ export function summarize(ctx, month) {
   r.goalsPlanned = ctx.goals.filter((g) => !g.archived && g.monthly > 0).reduce((t, g) => t + g.monthly, 0);
   r.freeAfterGoals = Math.max(0, r.availableToInvest - r.goalsPlanned);
 
+  r.byRule = byRule;
+  r.incomeByRule = incomeByRule;
   r.byCategory = sortedGroups(byCategory, r.expenseTotal);
   r.byBlock = sortedGroups(byBlock, r.expenseTotal);
   r.bySource = sortedGroups(bySource, r.expenseTotal);
@@ -211,7 +220,9 @@ export function billStatus(total, paid, dueDate, today) {
 
 /** Saldos reais das contas (somente movimentações realizadas). */
 export function accountBalances(ctx) {
+  if (ctx.balances) return ctx.balances;
   const bal = new Map();
+  ctx.balances = bal;
   for (const a of ctx.accounts.values()) bal.set(a.id, a.kind === 'credit' ? 0 : (a.openingBalance || 0));
   const add = (id, v) => { if (id && bal.has(id)) bal.set(id, bal.get(id) + v); };
   for (const tx of ctx.transactions) {

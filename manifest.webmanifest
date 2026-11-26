@@ -1,12 +1,12 @@
 {
-  "name": "Guia Financeiro",
-  "short_name": "Finanças",
-  "description": "Gerenciador financeiro pessoal local-first.",
+  "name": "Fluxo",
+  "short_name": "Fluxo",
+  "description": "Finanças pessoais local-first.",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",
-  "background_color": "#f6f6f7",
-  "theme_color": "#f6f6f7",
+  "background_color": "#f2f2f4",
+  "theme_color": "#f2f2f4",
   "lang": "pt-BR",
   "icons": [{ "src": "assets/icons/favicon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }]
 }

@@ -3,7 +3,7 @@
 
 export const DB_NAME = 'guia-financeiro.pessoal';
 export const DB_VERSION = 2;
-export const APP_VERSION = '1.0.0';
+export const APP_VERSION = '2.0.0';
 
 export const STORES = [
   'transactions', 'categories', 'blocks', 'accounts', 'recurrences',
