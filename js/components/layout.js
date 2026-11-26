@@ -37,14 +37,18 @@ export const PALETTE = {
   slate: { label: 'Grafite', hex: '#4f5868' },
 };
 export const CHART_LABELS = {
-  bars: 'Barras horizontais', columns: 'Barras verticais', donut: 'Rosca', table: 'Tabela resumida',
-  line: 'Linha', area: 'Área', list: 'Lista cronológica',
+  bars: 'Barras horizontais', columns: 'Barras verticais', donut: 'Rosca', table: 'Tabela resumida', top: 'Resumo dos maiores',
+  line: 'Linha', area: 'Área', list: 'Lista', cards: 'Cartões',
   day: 'Por dia (barras)', cum: 'Acumulado (linha)', ie: 'Receitas × despesas',
+  value: 'Valor simples', detail: 'Valor com composição', trend: 'Evolução mensal', compare: 'Comparação com o mês anterior',
+  summary: 'Resumo', progress: 'Barra de progresso', percent: 'Indicador percentual',
+  manual: 'Alternar manualmente', auto: 'Alternar automaticamente',
 };
 
 const META_KEY = 'ui.layout';
 const editing = new Map();       // seção → em modo de personalização
 const undoStacks = new Map();    // seção → layouts anteriores (memória)
+const redoStacks = new Map();    // seção → layouts desfeitos (refazer)
 let saveTimer = null;
 let pending = null;
 
@@ -126,11 +130,7 @@ export function normalizeItems(saved, registry) {
 }
 
 export function getSection(section, registry) {
-  try {
-    return normalizeItems(live().sections[section], registry);
-  } catch {
-    return defaultItems(registry);
-  }
+  return itemsOf(deviceKey(section), registry, section);
 }
 
 export function getSectionOptions(section) {
@@ -154,13 +154,14 @@ export async function flushLayout() {
 if (typeof document !== 'undefined') document.addEventListener('visibilitychange', () => { if (document.hidden) flushLayout(); });
 
 function writeSection(section, patch, { undo = true } = {}) {
-  const all = structuredClone(pending || readAll());
+  const all = structuredClone(pending || live());
   const prev = all.sections[section] || {};
   if (undo) {
     const stack = undoStacks.get(section) || [];
     stack.push(structuredClone(prev));
     if (stack.length > 30) stack.shift();
     undoStacks.set(section, stack);
+    redoStacks.delete(section);
   }
   all.sections[section] = { ...prev, ...patch };
   queueSave(all);
@@ -178,11 +179,20 @@ const live = () => {
 export function setSectionOptions(section, options, { undo = true } = {}) {
   writeSection(section, { options: { ...getSectionOptions(section), ...options } }, { undo });
 }
-function itemsOf(section, registry) {
-  try { return normalizeItems(live().sections[section], registry); } catch { return defaultItems(registry); }
+
+// Perfis por tipo de tela: no celular a organização é guardada à parte
+// ("seção@m"), para que mexer no layout pelo telefone nunca desfaça o desktop.
+export const NARROW_PX = 720;
+export const deviceKey = (section) => (typeof window !== 'undefined' && window.innerWidth < NARROW_PX ? `${section}@m` : section);
+
+function itemsOf(key, registry, base = key) {
+  try {
+    const all = live().sections;
+    return normalizeItems(all[key] || (key !== base ? all[base] : undefined), registry);
+  } catch { return defaultItems(registry); }
 }
-function saveItems(section, registry, items, opts) {
-  writeSection(section, { items: items.map(({ id, type, size, chart, color, hidden }) => ({ id, type, size, chart, color, hidden })), known: Object.keys(registry) }, opts);
+function saveItems(key, registry, items, opts) {
+  writeSection(key, { items: items.map(({ id, type, size, chart, color, hidden }) => ({ id, type, size, chart, color, hidden })), known: Object.keys(registry) }, opts);
 }
 
 export function undoSection(section) {
@@ -190,19 +200,40 @@ export function undoSection(section) {
   if (!stack.length) return false;
   const prev = stack.pop();
   const all = structuredClone(live());
+  const redo = redoStacks.get(section) || [];
+  redo.push(structuredClone(all.sections[section] || {}));
+  redoStacks.set(section, redo);
   all.sections[section] = prev;
   queueSave(all);
   setOverride(all);
   return true;
 }
+export function redoSection(section) {
+  const stack = redoStacks.get(section) || [];
+  if (!stack.length) return false;
+  const next = stack.pop();
+  const all = structuredClone(live());
+  const undo = undoStacks.get(section) || [];
+  undo.push(structuredClone(all.sections[section] || {}));
+  undoStacks.set(section, undo);
+  all.sections[section] = next;
+  queueSave(all);
+  setOverride(all);
+  return true;
+}
 export function canUndo(section) { return (undoStacks.get(section) || []).length > 0; }
+export function canRedo(section) { return (redoStacks.get(section) || []).length > 0; }
 
+/** Restaura a seção (desktop e celular). Pode ser desfeito. */
 export function resetSection(section) {
   const all = structuredClone(live());
-  const stack = undoStacks.get(section) || [];
-  stack.push(structuredClone(all.sections[section] || {}));
-  undoStacks.set(section, stack);
-  delete all.sections[section];
+  for (const key of [section, `${section}@m`]) {
+    if (!all.sections[key]) continue;
+    const stack = undoStacks.get(key) || [];
+    stack.push(structuredClone(all.sections[key]));
+    undoStacks.set(key, stack);
+    delete all.sections[key];
+  }
   queueSave(all);
   setOverride(all);
 }
@@ -211,6 +242,7 @@ export async function resetAllAppearance() {
   pending = null;
   clearTimeout(saveTimer);
   undoStacks.clear();
+  redoStacks.clear();
   currentOverride = null;
   await repo.setUiLayout({ version: LAYOUT_VERSION, sections: {} });
 }
@@ -221,26 +253,104 @@ export function setEditing(section, on) { editing.set(section, on); if (!on) flu
 // Ao trocar os dados por um backup ou outra aba, o estado em memória volta a ser o do banco.
 export function dropOverride() { currentOverride = null; pending = null; }
 
+// ——— Encaixe ———
+
+/**
+ * "Organizar automaticamente": percorre os componentes NA ORDEM escolhida,
+ * monta linhas de 12 colunas e, quando sobra espaço numa linha, alarga os
+ * componentes dela (do último para o primeiro) até o próximo tamanho
+ * permitido que caiba. Determinístico, sem reordenar, com no máximo
+ * 12 passos por linha — sempre termina com um layout válido.
+ */
+export function packRows(items, registry) {
+  const out = items.map((x) => ({ ...x }));
+  let row = [], used = 0;
+  const widen = () => {
+    let left = 12 - used;
+    for (let pass = 0; pass < 12 && left > 0 && row.length; pass++) {
+      let changed = false;
+      for (let i = row.length - 1; i >= 0 && left > 0; i--) {
+        const it = row[i];
+        const allowed = (registry[it.type]?.sizes || Object.keys(SIZES)).map((k) => [k, SIZES[k].span]).sort((a, b) => a[1] - b[1]);
+        const cur = SIZES[it.size].span;
+        const next = allowed.find(([, s]) => s > cur && s - cur <= left);
+        if (next) { left -= next[1] - cur; it.size = next[0]; changed = true; }
+      }
+      if (!changed) break;
+    }
+    row = []; used = 0;
+  };
+  for (const it of out) {
+    if (it.hidden) continue;
+    const span = SIZES[it.size]?.span || 4;
+    if (used + span > 12) widen();
+    row.push(it); used += span;
+    if (used === 12) widen();
+  }
+  if (row.length) widen();
+  return out;
+}
+
 // ——— Renderização da grade ———
+
+const ROW_UNIT = 4; // px: altura da linha fina da grade (encaixe vertical tipo masonry)
 
 /**
  * Renderiza a grade de componentes de uma seção.
  * opts: { section, registry, rerender }
  */
 export function widgetGrid({ section, registry, rerender }) {
-  const items = itemsOf(section, registry);
+  const key = deviceKey(section);
+  const items = itemsOf(key, registry, section);
   const edit = isEditing(section);
-  const grid = h('div', { class: `wgrid${edit ? ' is-editing' : ''}`, dataset: { section } });
+  const packing = getSectionOptions(section).packing === 'manual' ? 'manual' : 'auto';
+  const grid = h('div', { class: `wgrid pack-${packing}${edit ? ' is-editing' : ''}`, dataset: { section } });
   const liveRegion = h('div', { class: 'sr-only', 'aria-live': 'polite' });
-  const state = { items, grid, registry, section, rerender, liveRegion };
+  const state = { items, grid, registry, section, key, rerender, liveRegion, packing };
   for (const it of items) {
-    if (it.hidden && !edit) continue;
+    // Ocultos nunca ocupam espaço na grade (no modo de edição ficam na bandeja).
+    if (it.hidden) continue;
     // when(): componente sem conteúdo aplicável agora (ex.: faturas num mês sem cartão) some fora do modo de edição.
     const def = registry[it.type];
     if (!edit && def.when && !safeWhen(def)) continue;
     grid.append(widgetEl(it, state));
   }
-  return h('div', { class: 'wgrid-wrap' }, edit ? editToolbar(state) : null, grid, liveRegion);
+  masonry(grid);
+  return h('div', { class: 'wgrid-wrap' }, edit ? editToolbar(state) : null, edit ? hiddenTray(state) : null, grid, liveRegion);
+}
+
+/**
+ * Encaixe vertical: a grade usa linhas finas (4 px) e cada componente ocupa
+ * quantas linhas sua altura real pedir. Assim um componente baixo pode ficar
+ * abaixo de outro baixo ao lado de um alto, sem herdar a altura da "linha".
+ * A medição usa ResizeObserver; a altura depende só do conteúdo e da largura
+ * (nunca do número de linhas), então não há ciclo de redimensionamento.
+ * Sem ResizeObserver, a grade continua funcionando como grade comum.
+ */
+function masonry(grid) {
+  if (typeof ResizeObserver === 'undefined') return;
+  grid.classList.add('is-masonry');
+  let raf = 0;
+  const dirty = new Set();
+  const apply = () => {
+    raf = 0;
+    if (!grid.isConnected) { ro.disconnect(); mo.disconnect(); return; }
+    for (const el of dirty) {
+      if (!el.isConnected || el.classList.contains('is-dragging')) continue;
+      const mb = parseFloat(getComputedStyle(el).marginBottom) || 0;
+      const span = Math.max(1, Math.ceil((el.getBoundingClientRect().height + mb) / ROW_UNIT));
+      if (el.dataset.span !== String(span)) { el.dataset.span = String(span); el.style.gridRowEnd = `span ${span}`; }
+    }
+    dirty.clear();
+  };
+  const ro = new ResizeObserver((entries) => {
+    for (const e of entries) dirty.add(e.target);
+    if (!raf) raf = requestAnimationFrame(apply);
+  });
+  const watch = (el) => { if (el.classList?.contains('widget')) ro.observe(el); };
+  const mo = new MutationObserver((muts) => { for (const m of muts) for (const n of m.addedNodes) watch(n); });
+  for (const el of grid.children) watch(el);
+  mo.observe(grid, { childList: true });
 }
 
 function safeWhen(def) { try { return def.when() !== false; } catch { return true; } }
@@ -248,7 +358,7 @@ function safeWhen(def) { try { return def.when() !== false; } catch { return tru
 function renderBody(it, def, state) {
   try {
     // api.update grava preferências do próprio componente (ex.: modo do gráfico) sem redesenhar a seção.
-    const api = { update: (patch) => { state.items = state.items.map((x) => (x.id === it.id ? { ...x, ...patch } : x)); saveItems(state.section, state.registry, state.items, { undo: false }); } };
+    const api = { update: (patch) => { state.items = state.items.map((x) => (x.id === it.id ? { ...x, ...patch } : x)); saveItems(state.key, state.registry, state.items, { undo: false }); } };
     return def.render({ ...it }, api) || h('div', { class: 'empty-block' }, 'Sem conteúdo.');
   } catch (err) {
     console.error(err);
@@ -262,14 +372,15 @@ function widgetEl(it, state) {
   const def = state.registry[it.type];
   const edit = isEditing(state.section);
   const el = h('div', {
-    class: `widget w-${it.size}${it.hidden ? ' is-hidden' : ''}`,
+    class: `widget w-${it.size}`,
     dataset: { id: it.id, type: it.type, color: it.color && it.color !== 'auto' ? 'custom' : null },
     'aria-label': edit ? def.title : null,
   });
   const css = colorCss(it.color);
   if (css) el.style.setProperty('--w-accent', css);
   if (edit) el.append(widgetChrome(it, state, el));
-  el.append(h('div', { class: 'widget-body', inert: edit && it.hidden ? true : null }, it.hidden ? h('div', { class: 'widget-hidden-note' }, 'Oculto — aparece só no modo de personalização') : renderBody(it, def, state)));
+  el.append(h('div', { class: 'widget-body' }, renderBody(it, def, state)));
+  if (edit) el.append(resizeGrip(it, state, el));
   return el;
 }
 
@@ -277,19 +388,31 @@ function refreshWidget(state, id) {
   const it = state.items.find((x) => x.id === id);
   const old = state.grid.querySelector(`.widget[data-id="${CSS.escape(id)}"]`);
   if (!it || !old) return;
+  const before = rects(state.grid);
   const fresh = widgetEl(it, state);
   old.replaceWith(fresh);
-  if (!prefersReducedMotion()) fresh.animate([{ opacity: 0.4, transform: 'scale(0.985)' }, { opacity: 1, transform: 'none' }], { duration: 200, easing: 'cubic-bezier(.2,.8,.2,1)' });
+  before.set(fresh, before.get(old));
+  flip(state.grid, before);
 }
 
-function syncUndo(state) { if (state.undoBtn) state.undoBtn.disabled = !canUndo(state.section); }
+function syncUndo(state) {
+  if (state.undoBtn) state.undoBtn.disabled = !canUndo(state.key);
+  if (state.redoBtn) state.redoBtn.disabled = !canRedo(state.key);
+}
 
 function update(state, id, patch, msg) {
   state.items = state.items.map((x) => (x.id === id ? { ...x, ...patch } : x));
-  saveItems(state.section, state.registry, state.items);
+  saveItems(state.key, state.registry, state.items);
   syncUndo(state);
   refreshWidget(state, id);
   if (msg) state.liveRegion.textContent = msg;
+}
+
+function hideWidget(state, it) {
+  const def = state.registry[it.type];
+  update(state, it.id, { hidden: true }, `${def.title} oculto`);
+  state.rerender();
+  toast(`“${def.title}” oculto — está na lista de ocultos`, { action: { label: 'Desfazer', fn: () => { undoSection(state.key); state.rerender(); } } });
 }
 
 function widgetChrome(it, state, el) {
@@ -303,23 +426,63 @@ function widgetChrome(it, state, el) {
     moveBy(state, it.id, d);
   });
   const sizes = def.sizes || Object.keys(SIZES);
-  const sizeSel = h('select', { class: 'select select-sm', 'aria-label': `Tamanho de ${def.title}` }, ...sizes.map((k) => h('option', { value: k }, SIZES[k].label)));
-  sizeSel.value = it.size;
-  sizeSel.addEventListener('change', () => update(state, it.id, { size: sizeSel.value }, `${def.title}: ${SIZES[sizeSel.value].label}`));
-  let chartSel = null;
-  if (def.charts?.length > 1) {
-    chartSel = h('select', { class: 'select select-sm', 'aria-label': `Tipo de visualização de ${def.title}` }, ...def.charts.map((k) => h('option', { value: k }, CHART_LABELS[k] || k)));
-    chartSel.value = it.chart;
-    chartSel.addEventListener('change', () => update(state, it.id, { chart: chartSel.value }, `${def.title}: ${CHART_LABELS[chartSel.value]}`));
-  }
-  const colorBtn = def.color ? h('button', { class: 'btn btn-ghost btn-icon btn-sm', type: 'button', 'aria-label': `Cor de ${def.title}`, title: 'Cor de destaque' }, h('span', { class: 'swatch', style: { '--sw': colorCss(it.color) || 'var(--accent)' } })) : null;
-  colorBtn?.addEventListener('click', () => openColorMenu(colorBtn, it.color, (c) => update(state, it.id, { color: c }, `${def.title}: cor alterada`)));
-  const hideBtn = def.locked ? null : h('button', { class: 'btn btn-ghost btn-icon btn-sm', type: 'button', 'aria-label': it.hidden ? `Mostrar ${def.title}` : `Ocultar ${def.title}`, title: it.hidden ? 'Mostrar' : 'Ocultar',
-    onclick: () => {
-      update(state, it.id, { hidden: !it.hidden }, it.hidden ? `${def.title} visível` : `${def.title} oculto`);
-      toast(it.hidden ? `“${def.title}” voltou para a tela` : `“${def.title}” oculto`, { action: { label: 'Desfazer', fn: () => { undoSection(state.section); state.rerender(); } } });
-    } }, icon(it.hidden ? 'plus' : 'x', 'icon-sm'));
-  return h('div', { class: 'widget-chrome' }, handle, h('span', { class: 'widget-title truncate' }, def.title), colorBtn, hideBtn, h('span', { class: 'widget-controls' }, chartSel, sizeSel));
+  const settings = h('button', { class: 'btn btn-ghost btn-icon btn-sm widget-settings', type: 'button', 'aria-label': `Ajustes de ${def.title}: tamanho, formato e cor`, title: 'Tamanho, formato e cor', 'aria-haspopup': 'menu' }, icon('sliders', 'icon-sm'));
+  settings.addEventListener('click', () => {
+    const cur = state.items.find((x) => x.id === it.id) || it;
+    openMenu(settings, [
+      { header: 'Tamanho' },
+      ...sizes.map((k) => ({ label: SIZES[k].label, checked: cur.size === k, onSelect: () => update(state, it.id, { size: k }, `${def.title}: ${SIZES[k].label}`) })),
+      def.charts?.length > 1 ? 'sep' : null,
+      def.charts?.length > 1 ? { header: 'Formato' } : null,
+      ...(def.charts?.length > 1 ? def.charts.map((k) => ({ label: CHART_LABELS[k] || k, checked: cur.chart === k, onSelect: () => update(state, it.id, { chart: k }, `${def.title}: ${CHART_LABELS[k] || k}`) })) : []),
+      'sep',
+      def.color ? { label: 'Cor de destaque…', icon: 'palette', onSelect: () => openColorMenu(settings, cur.color, (c) => update(state, it.id, { color: c }, `${def.title}: cor alterada`)) } : null,
+      { label: 'Restaurar este componente', icon: 'undo', onSelect: () => { const d = defaultItems(state.registry).find((x) => x.type === it.type); update(state, it.id, { size: d.size, chart: d.chart, color: 'auto' }, `${def.title}: padrão restaurado`); } },
+      def.locked ? null : { label: 'Ocultar', icon: 'x', onSelect: () => hideWidget(state, cur) },
+    ]);
+  });
+  const hideBtn = def.locked ? null : h('button', { class: 'btn btn-ghost btn-icon btn-sm', type: 'button', 'aria-label': `Ocultar ${def.title}`, title: 'Ocultar', onclick: () => hideWidget(state, state.items.find((x) => x.id === it.id) || it) }, icon('x', 'icon-sm'));
+  return h('div', { class: 'widget-chrome' }, handle, h('span', { class: 'widget-title truncate' }, def.title), h('span', { class: 'widget-size faint' }, SIZES[it.size].label), settings, hideBtn);
+}
+
+/**
+ * Alça de redimensionamento: arrastar na horizontal escolhe o tamanho
+ * permitido mais próximo (sempre alinhado à grade de 12 colunas). Grava só ao soltar.
+ */
+function resizeGrip(it, state, el) {
+  const def = state.registry[it.type];
+  const sizes = (def.sizes || Object.keys(SIZES)).slice().sort((a, b) => SIZES[a].span - SIZES[b].span);
+  const grip = h('button', { class: 'widget-resize', type: 'button', 'aria-label': `Redimensionar ${def.title}. Setas esquerda e direita mudam o tamanho.`, title: 'Arraste para redimensionar' }, h('span'));
+  grip.addEventListener('keydown', (ev) => {
+    const d = { ArrowLeft: -1, ArrowRight: 1 }[ev.key];
+    if (!d) return;
+    ev.preventDefault();
+    const cur = (state.items.find((x) => x.id === it.id) || it).size;
+    const next = sizes[sizes.indexOf(cur) + d];
+    if (next) { update(state, it.id, { size: next }, `${def.title}: ${SIZES[next].label}`); state.grid.querySelector(`.widget[data-id="${CSS.escape(it.id)}"] .widget-resize`)?.focus(); }
+  });
+  grip.addEventListener('pointerdown', (ev) => {
+    if (ev.button !== 0 && ev.pointerType === 'mouse') return;
+    ev.preventDefault();
+    try { grip.setPointerCapture(ev.pointerId); } catch { /* sem captura */ }
+    const g = state.grid.getBoundingClientRect();
+    const colW = g.width / 12;
+    const left = el.getBoundingClientRect().left;
+    let chosen = it.size;
+    el.classList.add('is-resizing');
+    const move = (e) => {
+      const want = (e.clientX - left) / colW;
+      const best = sizes.reduce((a, k) => (Math.abs(SIZES[k].span - want) < Math.abs(SIZES[a].span - want) ? k : a), sizes[0]);
+      if (best !== chosen) { el.classList.remove(`w-${chosen}`); el.classList.add(`w-${best}`); chosen = best; }
+    };
+    const up = () => {
+      grip.removeEventListener('pointermove', move); grip.removeEventListener('pointerup', up); grip.removeEventListener('pointercancel', up);
+      el.classList.remove('is-resizing');
+      if (chosen !== it.size) update(state, it.id, { size: chosen }, `${def.title}: ${SIZES[chosen].label}`);
+    };
+    grip.addEventListener('pointermove', move); grip.addEventListener('pointerup', up); grip.addEventListener('pointercancel', up);
+  });
+  return grip;
 }
 
 export function openColorMenu(anchor, current, onPick) {
@@ -339,18 +502,50 @@ export function openColorMenu(anchor, current, onPick) {
 }
 
 function editToolbar(state) {
-  const undoBtn = h('button', { class: 'btn btn-sm', type: 'button', disabled: !canUndo(state.section), onclick: () => { if (undoSection(state.section)) { state.rerender(); toast('Alteração desfeita'); } } }, icon('undo', 'icon-sm'), 'Desfazer');
+  const undoBtn = h('button', { class: 'btn btn-sm btn-icon-text', type: 'button', disabled: !canUndo(state.key), title: 'Desfazer', onclick: () => { if (undoSection(state.key)) { state.rerender(); toast('Alteração desfeita'); } } }, icon('undo', 'icon-sm'), h('span', { class: 'hide-sm' }, 'Desfazer'));
+  const redoBtn = h('button', { class: 'btn btn-sm btn-icon', type: 'button', disabled: !canRedo(state.key), 'aria-label': 'Refazer', title: 'Refazer', onclick: () => { if (redoSection(state.key)) { state.rerender(); toast('Alteração refeita'); } } }, icon('undo', 'icon-sm flip-x'));
   state.undoBtn = undoBtn;
+  state.redoBtn = redoBtn;
+  const more = h('button', { class: 'btn btn-sm btn-icon', type: 'button', 'aria-label': 'Mais opções de organização', 'aria-haspopup': 'menu' }, icon('more', 'icon-sm'));
+  more.addEventListener('click', () => openMenu(more, [
+    { header: 'Encaixe' },
+    { label: 'Automático (preenche espaços livres)', checked: state.packing === 'auto', onSelect: () => { setSectionOptions(state.section, { packing: 'auto' }); state.rerender(); } },
+    { label: 'Ordem fixa (respeita a sequência exata)', checked: state.packing === 'manual', onSelect: () => { setSectionOptions(state.section, { packing: 'manual' }); state.rerender(); } },
+    'sep',
+    { label: 'Restaurar padrão desta seção', icon: 'undo', onSelect: async () => {
+      if (!(await confirmDialog({ title: 'Restaurar o layout padrão desta seção?', message: 'Volta à organização original desta seção (no computador e no celular). Nenhum dado financeiro é alterado.', confirmLabel: 'Restaurar layout' }))) return;
+      resetSection(state.section); state.rerender(); toast('Layout padrão restaurado', { action: { label: 'Desfazer', fn: () => { undoSection(state.key); state.rerender(); } } });
+    } },
+  ]));
   return h('div', { class: 'edit-bar', role: 'toolbar', 'aria-label': 'Personalização' },
     icon('sliders', 'icon-sm'),
-    h('span', { class: 'small grow' }, h('strong', null, 'Personalizando'), ' · arraste pela alça ou use as setas. Só a aparência muda.'),
-    h('button', { class: 'btn btn-sm', type: 'button', onclick: () => openLibrary(state) }, icon('plus', 'icon-sm'), 'Componentes'),
-    undoBtn,
-    h('button', { class: 'btn btn-sm', type: 'button', onclick: async () => {
-      if (!(await confirmDialog({ title: 'Restaurar o layout padrão desta seção?', message: 'Volta à organização original desta seção. Nenhum dado financeiro é alterado.', confirmLabel: 'Restaurar layout' }))) return;
-      resetSection(state.section); state.rerender(); toast('Layout padrão restaurado', { action: { label: 'Desfazer', fn: () => { undoSection(state.section); state.rerender(); } } });
-    } }, 'Restaurar padrão'),
+    h('span', { class: 'small grow edit-bar-text' }, h('strong', null, 'Personalizando'), state.key.endsWith('@m') ? ' · layout do celular' : '', h('span', { class: 'hide-sm' }, ' · arraste pela alça; só a aparência muda.')),
+    h('button', { class: 'btn btn-sm', type: 'button', title: 'Compacta espaços e ajusta larguras compatíveis, sem mudar a ordem', onclick: () => autoArrange(state) }, icon('sparkle', 'icon-sm'), h('span', null, 'Organizar automaticamente')),
+    h('button', { class: 'btn btn-sm', type: 'button', onclick: () => openLibrary(state) }, icon('plus', 'icon-sm'), h('span', null, 'Componentes')),
+    undoBtn, redoBtn, more,
     h('button', { class: 'btn btn-sm btn-primary', type: 'button', onclick: () => { setEditing(state.section, false); state.rerender(); toast('Personalização salva', { tone: 'success' }); } }, icon('check', 'icon-sm'), 'Concluir'));
+}
+
+function autoArrange(state) {
+  const packed = packRows(state.items, state.registry);
+  const changed = packed.some((x, i) => x.size !== state.items[i].size);
+  state.items = packed;
+  saveItems(state.key, state.registry, state.items);
+  if (state.packing !== 'auto') writeSection(state.section, { options: { ...getSectionOptions(state.section), packing: 'auto' } }, { undo: false });
+  state.rerender();
+  toast(changed ? 'Componentes reorganizados: larguras ajustadas e espaços compactados' : 'Espaços compactados; as larguras já estavam bem encaixadas', { tone: 'success', action: { label: 'Desfazer', fn: () => { undoSection(state.key); state.rerender(); } } });
+}
+
+/** Bandeja de ocultos: não ocupam a grade; voltam com um clique. */
+function hiddenTray(state) {
+  const hidden = state.items.filter((x) => x.hidden);
+  if (!hidden.length) return null;
+  return h('div', { class: 'hidden-tray', role: 'group', 'aria-label': 'Componentes ocultos' },
+    h('span', { class: 'small faint' }, 'Ocultos:'),
+    ...hidden.map((it) => h('button', { class: 'chip', type: 'button', 'aria-label': `Mostrar ${state.registry[it.type].title}`, onclick: () => {
+      update(state, it.id, { hidden: false }, `${state.registry[it.type].title} visível`);
+      state.rerender();
+    } }, icon('plus', 'icon-sm'), state.registry[it.type].title)));
 }
 
 function openLibrary(state) {
@@ -362,10 +557,13 @@ function openLibrary(state) {
       visible ? h('span', { class: 'pill pill-done' }, 'na tela') : h('button', { class: 'btn btn-sm', type: 'button', onclick: () => {
         update(state, type, { hidden: false }, `${def.title} adicionado`);
         m.close();
-        const el = state.grid.querySelector(`.widget[data-id="${CSS.escape(type)}"]`);
-        el?.scrollIntoView({ behavior: prefersReducedMotion() ? 'auto' : 'smooth', block: 'center' });
-        el?.classList.add('is-added');
-        setTimeout(() => el?.classList.remove('is-added'), 900);
+        state.rerender();
+        requestAnimationFrame(() => {
+          const el = document.querySelector(`.wgrid[data-section="${CSS.escape(state.section)}"] .widget[data-id="${CSS.escape(type)}"]`);
+          el?.scrollIntoView({ behavior: prefersReducedMotion() ? 'auto' : 'smooth', block: 'center' });
+          el?.classList.add('is-added');
+          setTimeout(() => el?.classList.remove('is-added'), 900);
+        });
       } }, icon('plus', 'icon-sm'), 'Adicionar'));
   });
   const m = openModal({ title: 'Componentes disponíveis', size: 'sm', drawer: true, body: h('div', { class: 'lib-list' }, ...rows),
@@ -397,7 +595,7 @@ function orderFromDom(state) {
   const ids = [...state.grid.querySelectorAll('.widget')].map((el) => el.dataset.id);
   const hidden = state.items.filter((x) => !ids.includes(x.id));
   state.items = [...ids.map((id) => state.items.find((x) => x.id === id)).filter(Boolean), ...hidden];
-  saveItems(state.section, state.registry, state.items);
+  saveItems(state.key, state.registry, state.items);
   syncUndo(state);
 }
 
@@ -424,25 +622,45 @@ function startDrag(ev, el, state) {
   const origNext = el.nextSibling;
   const ph = h('div', { class: `widget-placeholder w-${state.items.find((x) => x.id === el.dataset.id)?.size || 'm'}` });
   ph.style.height = `${r.height}px`;
+  if (el.style.gridRowEnd) ph.style.gridRowEnd = el.style.gridRowEnd;
   el.before(ph);
   Object.assign(el.style, { position: 'fixed', left: `${r.left}px`, top: `${r.top}px`, width: `${r.width}px`, height: `${r.height}px`, zIndex: 60, pointerEvents: 'none' });
   el.classList.add('is-dragging');
   document.body.classList.add('is-dragging-widget');
   try { handle.setPointerCapture(ev.pointerId); } catch { /* sem captura */ }
   let raf = 0, lastX = ev.clientX, lastY = ev.clientY, scrollRaf = 0;
+  // Histerese: depois de mover o marcador, só reavalia quando o ponteiro andar
+  // de novo — o refluxo da grade não pode disparar reordenações em cascata.
+  let anchorX = ev.clientX, anchorY = ev.clientY, lastTarget = null;
   const place = () => {
     raf = 0;
     el.style.transform = `translate(${lastX - offX - r.left}px, ${lastY - offY - r.top}px) scale(1.015)`;
-    const target = document.elementFromPoint(lastX, lastY)?.closest?.('.widget');
-    if (!target || target === el || !grid.contains(target)) return;
+    if (Math.hypot(lastX - anchorX, lastY - anchorY) < 14) return;
+    let target = document.elementFromPoint(lastX, lastY)?.closest?.('.widget');
+    // Ponteiro num espaço livre da grade: usa o componente mais próximo (destino previsível).
+    if (!target || !grid.contains(target)) {
+      const g = grid.getBoundingClientRect();
+      if (lastX < g.left || lastX > g.right || lastY < g.top - 40 || lastY > g.bottom + 40) return;
+      let best = null, bd = Infinity;
+      for (const w of grid.querySelectorAll('.widget:not(.is-dragging)')) {
+        const b = w.getBoundingClientRect();
+        const dx = Math.max(b.left - lastX, 0, lastX - b.right), dy = Math.max(b.top - lastY, 0, lastY - b.bottom);
+        const d = dx * dx + dy * dy;
+        if (d < bd) { bd = d; best = w; }
+      }
+      target = best;
+    }
+    if (!target || target === el) return;
     const tr = target.getBoundingClientRect();
     const sameRow = lastY > tr.top && lastY < tr.bottom;
     const after = sameRow ? lastX > tr.left + tr.width / 2 : lastY > tr.top + tr.height / 2;
     const ref = after ? target.nextSibling : target;
     if (ref === ph || (after && target.nextSibling === ph) || (!after && target.previousSibling === ph)) return;
+    if (target === lastTarget && ref === ph.nextSibling) return;
     const before = rects(grid);
     grid.insertBefore(ph, ref);
     flip(grid, before, el);
+    anchorX = lastX; anchorY = lastY; lastTarget = target;
   };
   const autoScroll = () => {
     const edge = 70;

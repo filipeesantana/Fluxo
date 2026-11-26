@@ -149,3 +149,17 @@
   .tab-add .tab-add-circle .icon { width: 22px; height: 22px; stroke-width: 2.3; }
   .tab-add { color: var(--text-2); }
 }
+
+/* Assinatura institucional (discreta, fixa na estrutura). */
+.signature { margin: 10px 4px 0; display: flex; flex-direction: column; gap: 1px; font-size: var(--fs-2xs); line-height: 1.35; color: var(--text-3); }
+.signature .sig-by { font-weight: 500; }
+.signature .sig-version { font-variant-numeric: tabular-nums; opacity: 0.85; }
+.signature .sig-mono { display: none; }
+.signature-main { display: none; }
+.sidebar-collapsed .app .signature { align-items: center; margin: 10px 0 0; }
+.sidebar-collapsed .app .signature .sig-by { display: none; }
+.sidebar-collapsed .app .signature .sig-mono { display: block; font-weight: 650; letter-spacing: 0.04em; }
+@media (max-width: 760px) {
+  .view { padding-bottom: 12px; }
+  .signature-main { display: flex; align-items: center; text-align: center; margin: 4px 0 calc(88px + env(safe-area-inset-bottom)); }
+}

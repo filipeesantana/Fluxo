@@ -3,6 +3,7 @@ import * as repo from './database/repository.js';
 import { ui, onUI, shiftMonth, goToday, readPref, writePref } from './state.js';
 import { initTheme, applyTheme, currentThemePref, applyDensity, currentDensity } from './theme.js';
 import { getSectionOptions, flushLayout } from './components/layout.js';
+import { APP_VERSION } from './version.js';
 import { initCalculator, toggleCalculator, isCalculatorOpen } from './components/calculator.js';
 import { openEntryForm } from './components/entry-form.js';
 import { hasModal } from './components/modal.js';
@@ -133,6 +134,8 @@ async function boot() {
   initTheme();
   buildNav();
   initCalculator();
+  // Versão vem de uma única fonte (js/version.js): assinatura, Sobre, diagnóstico e backups.
+  document.querySelectorAll('[data-app-version]').forEach((el) => { el.textContent = `v${APP_VERSION}`; });
   setCollapsed(readPref('sidebar', 'expanded') === 'collapsed', false);
   syncThemeButton();
   document.addEventListener('gf:theme', syncThemeButton);

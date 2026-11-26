@@ -25,11 +25,12 @@ function check(ok) {
 }
 
 /** Gaveta com navegação em pilha (Voltar sem perder o estado anterior). */
-function drillDrawer(title) {
+function drillDrawer(title, calcRef = null) {
   const body = h('div', { class: 'drill' });
   const back = h('button', { class: 'btn btn-ghost btn-sm', type: 'button', hidden: true, onclick: () => pop() }, icon('chev-left', 'icon-sm'), 'Voltar');
   const stack = [];
-  const m = openModal({ title, body: h('div', { class: 'stack' }, back, body), drawer: true, footer: [h('span', { class: 'grow' }), h('button', { class: 'btn btn-primary', type: 'button', onclick: () => m.close() }, 'Fechar')] });
+  const calcBtn = h('button', { class: 'btn', type: 'button', hidden: !calcRef, title: 'Abre a calculadora com este valor como referência dinâmica (@1)', onclick: async () => { const c = await import('../components/calculator.js'); c.openCalculatorWithRef(calcRef); } }, icon('calc', 'icon-sm'), 'Usar na calculadora');
+  const m = openModal({ title, body: h('div', { class: 'stack' }, back, body), drawer: true, footer: [calcBtn, h('span', { class: 'grow' }), h('button', { class: 'btn btn-primary', type: 'button', onclick: () => m.close() }, 'Fechar')] });
   const show = (view, dir) => {
     put(body, view.content);
     m.setTitle(view.title);
@@ -43,7 +44,7 @@ function drillDrawer(title) {
 
 function itemsList(items, empty = 'Nada neste período.') {
   if (!items.length) return h('div', { class: 'empty-block' }, empty);
-  return h('div', { class: 'tx-list', role: 'list' }, ...items.sort((a, b) => (a.date < b.date ? 1 : -1)).map((it) => txRow(it, { onOpen: openItem, onToggle: toggleStatus, showDate: true })));
+  return h('div', { class: 'tx-list', role: 'list' }, ...items.sort((a, b) => ((a.date || '9') < (b.date || '9') ? 1 : -1)).map((it) => txRow(it, { onOpen: openItem, onToggle: toggleStatus, showDate: true })));
 }
 
 function billRows(bills, which) {
@@ -56,7 +57,8 @@ export function parts(s, ctx) {
     incomeReceived: s.items.filter((it) => it.type === 'income' && it.status === 'done'),
     incomeExpected: s.items.filter((it) => it.type === 'income' && it.status !== 'done'),
     expenseDone: s.items.filter((it) => (it.type === 'expense' || it.type === 'refund') && it.status === 'done' && !card(it)),
-    expensePending: s.items.filter((it) => (it.type === 'expense' || it.type === 'refund') && it.status !== 'done' && !card(it)),
+    expensePending: s.items.filter((it) => (it.type === 'expense' || it.type === 'refund') && it.status !== 'done' && !card(it) && !it.forecast),
+    forecast: s.items.filter((it) => it.forecast),
     cardItems: s.items.filter((it) => (it.type === 'expense' || it.type === 'refund') && card(it)),
   };
 }
@@ -68,7 +70,9 @@ export function openKpiDetail(kind, month) {
   const label = capitalize(formatMonth(month));
   const sumIncome = (list) => list.reduce((t, x) => t + x.amount, 0);
   const sumExp = (list) => list.reduce((t, x) => t + expenseValue(x), 0);
-  const d = drillDrawer('');
+  // Referência dinâmica para a calculadora: o mesmo valor do indicador, no mês aberto.
+  const REF_KIND = { surplus: 'projectedSurplus', invest: 'availableToInvest', incomeReceived: 'incomeReceived', incomeExpected: 'incomeExpected', expenseDone: 'expenseDone', expensePending: 'expensePending' };
+  const d = drillDrawer('', REF_KIND[kind] ? { kind: REF_KIND[kind], month } : null);
   const listView = (title, items, extra = []) => () => d.push(title, h('div', { class: 'stack-lg' }, ...extra, itemsList(items)));
   const bills = s.cardBills;
   const billsPaid = bills.reduce((t, b) => t + (b.total > 0 ? Math.min(b.paid, b.total) : b.total), 0);
@@ -76,22 +80,24 @@ export function openKpiDetail(kind, month) {
 
   const views = {
     surplus: () => {
-      const total = s.incomeReceived + s.incomeExpected - s.expenseDone - s.expensePending;
+      const total = s.incomeReceived + s.incomeExpected - s.expenseDone - s.expensePending - s.forecastLeft;
       d.push(`Sobra projetada · ${label}`, h('div', { class: 'stack-lg' },
         h('div', { class: 'kvs' },
           line('Receitas recebidas', s.incomeReceived, { sign: '+ ', onOpen: listView('Receitas recebidas', p.incomeReceived) }),
           line('Receitas previstas', s.incomeExpected, { sign: '+ ', onOpen: listView('Receitas previstas', p.incomeExpected) }),
           line('Despesas realizadas', s.expenseDone, { sign: '− ', onOpen: () => views.expenseDone(true) }),
           line('Compromissos pendentes', s.expensePending, { sign: '− ', onOpen: () => views.expensePending(true) }),
+          s.forecastLeft ? line('Previsões mensais restantes', s.forecastLeft, { sign: '− ', hint: 'estimativa de consumo, não obrigação', onOpen: listView('Previsões mensais restantes', p.forecast, [h('p', { class: 'faint small' }, 'Valor planejado que ainda não foi gasto (ex.: combustível). Gastos vinculados consomem a previsão; o que sobrar não vira despesa.')]) }) : null,
           line('Sobra projetada', s.projectedSurplus, { strong: true, cls: s.projectedSurplus < 0 ? 'neg' : '' })),
         check(total === s.projectedSurplus),
         h('h3', { class: 'small faint' }, 'Despesas do mês por tipo'),
         h('div', { class: 'kvs' },
-          line('Contas fixas (recorrentes)', s.expFixed, { onOpen: listView('Contas fixas', s.items.filter((it) => it.recurrenceId && it.type !== 'income' && it.type !== 'transfer')) }),
+          line('Contas fixas (recorrentes)', s.expFixed, { onOpen: listView('Contas fixas', s.items.filter((it) => it.recurrenceId && !it.forecast && !it.planId && it.type !== 'income' && it.type !== 'transfer')) }),
           line('Parcelas', s.expInstallments, { onOpen: listView('Parcelas', s.items.filter((it) => it.planId)) }),
-          line('Gastos pontuais', s.expOneOff, { onOpen: listView('Gastos pontuais', s.items.filter((it) => !it.planId && !it.recurrenceId && (it.type === 'expense' || it.type === 'refund'))) }),
+          line('Gastos pontuais', s.expOneOff, { onOpen: listView('Gastos pontuais', s.items.filter((it) => !it.planId && !it.recurrenceId && !it.forecast && !it.forecastId && (it.type === 'expense' || it.type === 'refund'))) }),
+          s.expForecast ? line('Previsões mensais (usado + restante)', s.expForecast, { onOpen: listView('Previsões mensais', s.items.filter((it) => it.forecast || it.forecastId)) }) : null,
           line('Total de despesas', s.expenseTotal, { strong: true })),
-        check(s.expFixed + s.expInstallments + s.expOneOff === s.expenseTotal),
+        check(s.expFixed + s.expInstallments + s.expOneOff + s.expForecast === s.expenseTotal),
         h('p', { class: 'faint small' }, 'Transferências entre contas, pagamentos de fatura e aportes não entram como despesa: só movem dinheiro.')));
     },
     invest: () => {

@@ -3,9 +3,9 @@ import { STORES } from './schema.js';
 import { VALIDATORS, normalizeName, sameName } from '../services/validation.js';
 import { competenceOf, isCard, billFor } from '../services/cards.js';
 import { buildInstallments } from '../services/installments.js';
-import { endDateForCount } from '../services/recurrence.js';
+import { endDateForCount, ruleOccurrences, ruleMode, parseDays } from '../services/recurrence.js';
 import { createContext } from '../services/finance.js';
-import { today, addDays, currentMonth, monthOf, addMonths } from '../utils/dates.js';
+import { today, addDays, currentMonth, monthOf, addMonths, firstDay, lastDay, dateInMonth } from '../utils/dates.js';
 import { uid } from '../utils/dom.js';
 
 const DEFAULT_CATEGORIES = {
@@ -128,7 +128,17 @@ function assertWritable() {
  * banco ainda tenha a revisão que esta aba conhece: se outra aba alterou ou
  * excluiu o registro nesse meio tempo, nada é gravado (ConflictError).
  */
-async function apply(ops, { broadcast = true, silent = false } = {}) {
+// Gravações desta aba em fila: cada uma parte do estado já confirmado pela
+// anterior. Sem isso, duas ações rápidas no mesmo registro (ex.: dois eventos
+// "change" seguidos) disputariam a mesma revisão e uma delas seria recusada.
+let writeChain = Promise.resolve();
+function apply(ops, opts) {
+  const run = writeChain.then(() => applyNow(ops, opts));
+  writeChain = run.catch(() => {});
+  return run;
+}
+
+async function applyNow(ops, { broadcast = true, silent = false } = {}) {
   assertWritable();
   const prepared = ops.map((op) => {
     if (op.store === 'meta') return op;
@@ -230,7 +240,14 @@ export function normalizeTransaction(input, previous) {
     if (isCard(to)) tx.billMonth = tx.billMonth || monthOf(tx.date);
     else delete tx.billMonth;
   }
-  if (!tx.monthManual) tx.month = competenceOf(tx, acc);
+  if (!tx.date) {
+    // Data a definir: o compromisso pertence ao período planejado e nunca está "pago".
+    tx.date = null;
+    tx.period = tx.period || input.month || previous?.month || monthOf(today());
+    tx.month = tx.period;
+    tx.monthManual = false;
+  } else if (!tx.monthManual) tx.month = competenceOf(tx, acc);
+  for (const k of ['occurrenceDate', 'occurrenceKey', 'plannedAmount', 'estimated', 'forecastId', 'remainderOf', 'replicaOf']) if (tx[k] == null || tx[k] === false) delete tx[k];
   if (!tx.description) tx.description = defaultDescription(tx);
   return tx;
 }
@@ -257,9 +274,10 @@ export async function saveTransaction(input, { baseRev } = {}) {
     throw new ValidationError('Este lançamento foi excluído em outra aba enquanto você editava; nada foi gravado.');
   }
   const tx = normalizeTransaction(input, prev);
-  if (tx.recurrenceId && tx.occurrenceDate) {
-    const clash = list('transactions').find((t) => t.id !== tx.id && t.recurrenceId === tx.recurrenceId && t.occurrenceDate === tx.occurrenceDate);
-    if (clash) tx.id = clash.id; // nunca cria duas ocorrências para a mesma data
+  const key = tx.occurrenceKey || tx.occurrenceDate;
+  if (tx.recurrenceId && key && !tx.remainderOf) {
+    const clash = list('transactions').find((t) => t.id !== tx.id && t.recurrenceId === tx.recurrenceId && (t.occurrenceKey || t.occurrenceDate) === key && !t.remainderOf);
+    if (clash) tx.id = clash.id; // nunca cria duas ocorrências para a mesma chave
   }
   await apply([{ store: 'transactions', put: tx }]);
   return tx;
@@ -288,8 +306,40 @@ export async function setStatus(id, status) {
 export async function duplicateTransaction(id, overrides = {}) {
   const tx = data.transactions.get(id);
   if (!tx) return null;
-  const { id: _, recurrenceId, occurrenceDate, planId, installment, createdAt, ...rest } = tx;
+  // A cópia nunca herda vínculo de série, parcela, previsão nem pagamento parcial.
+  const { id: _, rev, recurrenceId, occurrenceDate, occurrenceKey, period, remainderOf, plannedAmount, planId, installment, createdAt, ...rest } = tx;
   return saveTransaction({ ...rest, ...overrides, monthManual: false });
+}
+
+/**
+ * Replica um lançamento para outros meses (ação "Replicar para outros meses").
+ * - As cópias começam SEMPRE como previstas (o "pago" não é replicado), salvo escolha explícita;
+ * - dateMode: 'same' (mesmo dia, ajustado a meses curtos) · 'day' (dia escolhido) · 'flex' (data a definir);
+ * - ids determinísticos por operação (`opId:mês`): repetir o clique não duplica;
+ * - tudo em uma única transação.
+ */
+export async function replicateTransaction(id, { months, dateMode = 'same', day = null, status = 'planned', opId }) {
+  const tx = data.transactions.get(id);
+  if (!tx) throw new ValidationError('Lançamento não encontrado.');
+  if (tx.type === 'transfer') throw new ValidationError('Transferências não podem ser replicadas por aqui.');
+  const uniq = [...new Set(months)].filter((m) => /^\d{4}-\d{2}$/.test(m)).sort();
+  if (!uniq.length) throw new ValidationError('Escolha pelo menos um mês.');
+  if (uniq.length > 60) throw new ValidationError('Escolha no máximo 60 meses de uma vez.');
+  if (!opId) throw new ValidationError('Operação sem identificador.');
+  const { id: _, rev, recurrenceId, occurrenceDate, occurrenceKey, period, remainderOf, plannedAmount, planId, installment, createdAt, refundOf, monthManual, month, billMonth, ...rest } = tx;
+  const srcDay = tx.date ? Number(tx.date.slice(8, 10)) : 1;
+  const ops = [];
+  const created = [];
+  for (const m of uniq) {
+    const cid = `${opId}:${m}`;
+    if (data.transactions.has(cid)) continue; // mesma operação repetida
+    const date = dateMode === 'flex' ? null : dateInMonth(m, dateMode === 'day' && day ? day : srcDay);
+    const row = normalizeTransaction({ ...rest, id: cid, status: date ? status : 'planned', date, period: date ? undefined : m, month: date ? undefined : m, monthManual: false, replicaOf: tx.id });
+    ops.push({ store: 'transactions', put: row });
+    created.push(row);
+  }
+  if (ops.length) await apply(ops);
+  return created;
 }
 
 // ——— Recorrências ———
@@ -315,20 +365,39 @@ export async function saveRecurrence(input) {
   return rule;
 }
 
-/** Normaliza campos derivados de uma regra (âncora do dia, quantidade → data final, benefício). */
+/** Normaliza campos derivados de uma regra (modo, âncora do dia, quantidade → data final, benefício). */
 function finalizeRule(rule) {
-  if (rule.frequency !== 'weekly' && !rule.anchorDay) rule.anchorDay = Number(rule.startDate.slice(8, 10));
-  if (rule.frequency === 'weekly') delete rule.anchorDay;
+  const mode = ruleMode(rule);
+  if (mode === 'fixed') delete rule.mode; else { rule.mode = mode; rule.frequency = 'monthly'; }
+  if (mode !== 'days') delete rule.days; else rule.days = parseDays(rule.days);
+  if (mode !== 'flex') delete rule.perPeriod; else rule.perPeriod = Math.min(31, Math.max(1, Math.round(Number(rule.perPeriod) || 1)));
+  if (mode !== 'forecast') delete rule.closed;
+  if (mode === 'fixed' && rule.frequency !== 'weekly' && rule.frequency !== 'daily' && !rule.anchorDay) rule.anchorDay = Number(rule.startDate.slice(8, 10));
+  if (mode !== 'fixed' || rule.frequency === 'weekly' || rule.frequency === 'daily') delete rule.anchorDay;
   if (rule.count) rule.endDate = endDateForCount(rule, rule.count);
   if (rule.type === 'income') rule.restricted = Boolean(rule.restricted) || data.accounts.get(rule.sourceId)?.kind === 'benefit';
   if (!rule.pauses?.length) delete rule.pauses;
+  if (!rule.estimated) delete rule.estimated;
   return rule;
 }
 
+/** Chave da ocorrência que corresponde a uma data, no modo da regra (ou null). */
+export function keyForDate(rule, date) {
+  const mode = ruleMode(rule);
+  const m = monthOf(date);
+  if (mode === 'fixed') return ruleOccurrences(rule, date, date)[0]?.key || null;
+  if (mode === 'days') return ruleOccurrences(rule, firstDay(m), lastDay(m)).find((o) => o.date === date)?.key || null;
+  if (mode === 'flex') {
+    const free = ruleOccurrences(rule, firstDay(m), lastDay(m)).find((o) => !existingOcc(rule.id, o.key));
+    return free?.key || null;
+  }
+  return null;
+}
+
 /**
- * Cria a regra e, opcionalmente, sua primeira ocorrência já realizada, em UMA
- * transação: nunca fica uma regra sem a ocorrência paga (ou o contrário).
- * Idempotente pelo id da regra.
+ * Cria a regra e, opcionalmente, a ocorrência já realizada que deu origem a ela,
+ * em UMA transação. Idempotente pelo id da regra. Em previsões mensais o
+ * lançamento de origem vira um gasto vinculado (consome a previsão).
  */
 export async function createRecurrence(input, firstOccurrence = null) {
   if (input.id && data.recurrences.has(input.id)) return data.recurrences.get(input.id);
@@ -340,10 +409,13 @@ export async function createRecurrence(input, firstOccurrence = null) {
   const ops = [{ store: 'recurrences', put: rule }];
   if (firstOccurrence) {
     const date = firstOccurrence.date || rule.startDate;
-    ops.push({ store: 'transactions', put: normalizeTransaction({
-      type: rule.type, description: rule.description, amount: rule.amount, date, categoryId: rule.categoryId, blockId: rule.blockId,
-      sourceId: rule.sourceId, restricted: rule.restricted, ...firstOccurrence, id: `${rule.id}:${date}`, recurrenceId: rule.id, occurrenceDate: date,
-    }) });
+    if (ruleMode(rule) === 'forecast') {
+      ops.push({ store: 'transactions', put: normalizeTransaction({ ...firstOccurrence, id: `${rule.id}:origem`, date, forecastId: rule.id, recurrenceId: null }) });
+    } else {
+      const key = keyForDate(rule, date);
+      if (key) ops.push({ store: 'transactions', put: occurrenceTx(rule, key, { ...firstOccurrence, date }) });
+      else ops.push({ store: 'transactions', put: normalizeTransaction({ ...firstOccurrence, id: `${rule.id}:origem`, date }) });
+    }
   }
   await apply(ops);
   return rule;
@@ -351,25 +423,33 @@ export async function createRecurrence(input, firstOccurrence = null) {
 
 /**
  * Transforma um lançamento existente em recorrente: a regra começa na data do
- * lançamento e o próprio lançamento passa a ser a primeira ocorrência
- * (nenhuma cópia é criada).
+ * lançamento e o próprio lançamento passa a ser a primeira ocorrência (nenhuma
+ * cópia é criada). Em previsão mensal, ele passa a consumir a previsão do mês.
  */
-export async function convertToRecurring(txId, { frequency = 'monthly', interval = 1, endDate = null, count = null } = {}) {
+export async function convertToRecurring(txId, { frequency = 'monthly', interval = 1, endDate = null, count = null, mode = 'fixed', days = null, perPeriod = null } = {}) {
   const tx = data.transactions.get(txId);
   if (!tx) throw new ValidationError('Lançamento não encontrado.');
-  if (tx.recurrenceId) throw new ValidationError('Este lançamento já faz parte de uma recorrência.');
+  if (tx.recurrenceId || tx.forecastId) throw new ValidationError('Este lançamento já faz parte de uma recorrência.');
   if (tx.planId) throw new ValidationError('Parcelas não podem virar recorrência; use o parcelamento.');
   if (tx.type === 'transfer' || tx.type === 'refund') throw new ValidationError('Somente receitas e despesas podem ser recorrentes.');
+  if (!tx.date) throw new ValidationError('Defina a data do lançamento antes de transformá-lo em recorrente.');
+  if (mode === 'forecast' && tx.type !== 'expense') throw new ValidationError('Previsão mensal é só para despesas.');
   const rule = finalizeRule({
-    id: uid(), type: tx.type, description: tx.description, amount: tx.amount, startDate: tx.date, endDate, count: count || undefined,
-    frequency, interval, categoryId: tx.categoryId, blockId: tx.blockId, sourceId: tx.sourceId, restricted: tx.restricted,
+    id: uid(), type: tx.type, description: tx.description, amount: tx.amount, startDate: mode === 'fixed' ? tx.date : firstDay(monthOf(tx.date)), endDate, count: count || undefined,
+    frequency: mode === 'fixed' ? frequency : 'monthly', interval, mode, days: mode === 'days' ? (days?.length ? days : [Number(tx.date.slice(8, 10))]) : undefined,
+    perPeriod: mode === 'flex' ? perPeriod || 1 : undefined,
+    categoryId: tx.categoryId, blockId: tx.blockId, sourceId: tx.sourceId, method: tx.method || null, restricted: tx.restricted,
     exceptions: {}, createdAt: Date.now(), updatedAt: Date.now(),
   });
   if (!rule.count) delete rule.count;
-  await apply([
-    { store: 'recurrences', put: rule },
-    { store: 'transactions', put: { ...tx, recurrenceId: rule.id, occurrenceDate: tx.date, updatedAt: Date.now() } },
-  ]);
+  let linked;
+  if (mode === 'forecast') linked = { ...tx, forecastId: rule.id, updatedAt: Date.now() };
+  else {
+    const key = keyForDate(rule, tx.date);
+    linked = key ? { ...tx, recurrenceId: rule.id, occurrenceKey: key, occurrenceDate: mode === 'fixed' ? tx.date : undefined, period: monthOf(tx.date), updatedAt: Date.now() } : { ...tx };
+    if (mode !== 'fixed') delete linked.occurrenceDate;
+  }
+  await apply([{ store: 'recurrences', put: rule }, { store: 'transactions', put: linked }]);
   return rule;
 }
 
@@ -379,7 +459,7 @@ export async function pauseRecurrence(ruleId, fromDate) {
   if (!rule) return;
   const pauses = [...(rule.pauses || []).filter((p) => p.to), { from: fromDate, to: null }];
   const ops = [{ store: 'recurrences', put: { ...rule, pauses, updatedAt: Date.now() } }];
-  for (const t of list('transactions')) if (t.recurrenceId === ruleId && t.occurrenceDate >= fromDate && t.status === 'planned') ops.push({ store: 'transactions', del: t.id });
+  for (const t of list('transactions')) if (t.recurrenceId === ruleId && occStart(t) >= fromDate && t.status === 'planned') ops.push({ store: 'transactions', del: t.id });
   await apply(ops);
 }
 
@@ -393,38 +473,114 @@ export async function resumeRecurrence(ruleId, date) {
 
 export const isRulePaused = (rule) => (rule.pauses || []).some((p) => !p.to);
 
-const existingOcc = (ruleId, date) => list('transactions').find((t) => t.recurrenceId === ruleId && t.occurrenceDate === date);
+/** Chave de ocorrência de um lançamento (compatível com a 3.0, que só tinha a data). */
+export const occKeyOf = (t) => t.occurrenceKey || t.occurrenceDate || null;
+/** Início do período de uma chave (para comparar "desta data em diante"). */
+const keyStart = (k) => (/^\d{4}-\d{2}-\d{2}$/.test(k) ? k : firstDay(k.slice(0, 7)));
+const occStart = (t) => (occKeyOf(t) ? keyStart(occKeyOf(t)) : t.date || firstDay(t.month));
 
-function occurrenceTx(rule, date, overrides = {}) {
+const existingOcc = (ruleId, key) => list('transactions').find((t) => t.recurrenceId === ruleId && occKeyOf(t) === key && !t.remainderOf);
+
+function occurrenceTx(rule, key, overrides = {}) {
+  const prev = existingOcc(rule.id, key);
+  const keyDate = /^\d{4}-\d{2}-\d{2}$/.test(key) ? key : /@/.test(key) ? dateInMonth(key.slice(0, 7), Number(key.split('@')[1])) : null;
+  const period = key.slice(0, 7);
+  const date = overrides.date !== undefined ? overrides.date : prev ? prev.date : keyDate;
   return normalizeTransaction({
-    type: rule.type, status: 'planned', description: rule.description, amount: rule.amount, date,
-    categoryId: rule.categoryId, blockId: rule.blockId, sourceId: rule.sourceId, restricted: rule.restricted,
-    recurrenceId: rule.id, occurrenceDate: date, ...overrides,
+    type: rule.type, status: 'planned', description: rule.description, amount: rule.amount,
+    categoryId: rule.categoryId, blockId: rule.blockId, sourceId: rule.sourceId, restricted: rule.restricted, method: rule.method || null,
+    estimated: rule.estimated || undefined,
+    ...(prev || {}), ...overrides,
+    date, period, month: date ? undefined : period, monthManual: prev?.monthManual || false,
+    // occurrenceDate só no modo de data única (o índice da v2 é único por data).
+    recurrenceId: rule.id, occurrenceKey: key, occurrenceDate: ruleMode(rule) === 'fixed' ? keyDate : undefined,
     // Identidade determinística: a mesma ocorrência sempre tem o mesmo id,
-    // mesmo que valor ou data sejam ajustados depois.
-    id: existingOcc(rule.id, date)?.id || `${rule.id}:${date}`,
-  }, existingOcc(rule.id, date));
+    // mesmo que data, valor ou fonte sejam ajustados depois.
+    id: prev?.id || `${rule.id}:${key}`,
+  }, prev);
 }
 
-/** Transforma uma ocorrência projetada em movimentação real (paga ou editada). */
-export async function materializeOccurrence(ruleId, date, overrides) {
+/** Transforma uma ocorrência projetada em movimentação real (paga, editada ou com data definida). */
+export async function materializeOccurrence(ruleId, key, overrides) {
   const rule = data.recurrences.get(ruleId);
   if (!rule) throw new ValidationError('Recorrência não encontrada');
-  const tx = occurrenceTx(rule, date, overrides);
+  const tx = occurrenceTx(rule, key, overrides);
   await apply([{ store: 'transactions', put: tx }]);
   return tx;
 }
 
+/** Define (ou remove) a data de uma ocorrência flexível. Nunca cria uma segunda ocorrência. */
+export async function setOccurrenceDate(ruleId, key, date) {
+  return materializeOccurrence(ruleId, key, { date: date || null });
+}
+
 /**
- * Ignora a ocorrência de `date`. Por padrão só remove a versão prevista;
- * com removeDone (exclusão pedida explicitamente) remove também a realizada.
+ * Pagamento (ou recebimento) de qualquer item previsto: ocorrência projetada,
+ * ocorrência materializada ou lançamento previsto avulso.
+ * - date/amount/sourceId: dados efetivos do pagamento;
+ * - keepRemainder: pagamento parcial — a diferença continua prevista, vinculada ao mesmo item;
+ * - grava tudo em uma transação e guarda o valor previsto para permitir desfazer.
  */
-export async function skipOccurrence(ruleId, date, { removeDone = false } = {}) {
+export async function payItem(item, { date, amount, sourceId, keepRemainder = false } = {}) {
+  if (item.forecast) throw new ValidationError('Uma previsão mensal não é paga: registre os gastos e eles consomem a previsão.');
+  if (!date) throw new ValidationError('Informe a data do pagamento.');
+  const planned = item.amount;
+  const paid = amount ?? planned;
+  if (!Number.isSafeInteger(paid) || paid <= 0) throw new ValidationError('Informe um valor pago maior que zero.');
+  const fields = { status: 'done', date, amount: paid, sourceId: sourceId === undefined ? item.sourceId : sourceId || null };
+  if (paid !== planned) fields.plannedAmount = planned;
+  let tx;
+  if (item.virtual) {
+    const rule = data.recurrences.get(item.recurrenceId);
+    if (!rule) throw new ValidationError('Recorrência não encontrada.');
+    tx = occurrenceTx(rule, item.occurrenceKey || item.occurrenceDate, fields);
+  } else {
+    const prev = data.transactions.get(item.id);
+    if (!prev) throw new ValidationError('Lançamento não encontrado.');
+    tx = normalizeTransaction({ ...prev, ...fields }, prev);
+  }
+  const ops = [{ store: 'transactions', put: tx }];
+  const diff = planned - paid;
+  if (keepRemainder && diff > 0) {
+    const rid = `${tx.id}~resto`;
+    const prevRest = data.transactions.get(rid);
+    ops.push({ store: 'transactions', put: normalizeTransaction({
+      ...(prevRest || {}), id: rid, type: tx.type, status: 'planned', amount: diff,
+      description: `${tx.description} (restante)`, date: item.date || null, period: tx.period || tx.month, month: item.date ? undefined : (tx.period || tx.month),
+      categoryId: tx.categoryId, blockId: tx.blockId, sourceId: item.sourceId || null, recurrenceId: tx.recurrenceId || null, remainderOf: tx.id, forecastId: tx.forecastId || null,
+    }, prevRest) });
+  }
+  await apply(ops);
+  return tx;
+}
+
+/** Desfaz um pagamento: volta a previsto com o valor planejado e remove o restante criado. */
+export async function unpayItem(id) {
+  const tx = data.transactions.get(id);
+  if (!tx || tx.status !== 'done') return null;
+  const rest = data.transactions.get(`${id}~resto`);
+  const back = { ...tx, status: 'planned', amount: tx.plannedAmount || tx.amount, updatedAt: Date.now() };
+  delete back.plannedAmount;
+  const ops = [{ store: 'transactions', put: back }];
+  if (rest && rest.status === 'planned') ops.push({ store: 'transactions', del: rest.id });
+  await apply(ops);
+  return back;
+}
+
+/**
+ * Ignora (ou cancela) a ocorrência de chave `key`. Por padrão só remove a
+ * versão prevista; com removeDone (exclusão pedida explicitamente) remove
+ * também a realizada. Ignorar ou cancelar nunca significa pagamento.
+ */
+export async function skipOccurrence(ruleId, key, { removeDone = false, reason = 'skipped' } = {}) {
   const rule = data.recurrences.get(ruleId);
   if (!rule) return;
-  const ops = [{ store: 'recurrences', put: { ...rule, exceptions: { ...(rule.exceptions || {}), [date]: 'skipped' }, updatedAt: Date.now() } }];
-  const mat = list('transactions').find((t) => t.recurrenceId === ruleId && t.occurrenceDate === date && (removeDone || t.status === 'planned'));
-  if (mat) ops.push({ store: 'transactions', del: mat.id });
+  const ops = [{ store: 'recurrences', put: { ...rule, exceptions: { ...(rule.exceptions || {}), [key]: reason === 'cancelled' ? 'cancelled' : 'skipped' }, updatedAt: Date.now() } }];
+  for (const t of list('transactions')) {
+    if (t.recurrenceId !== ruleId) continue;
+    const own = occKeyOf(t) === key || (t.remainderOf && occKeyOf(data.transactions.get(t.remainderOf) || {}) === key);
+    if (own && (removeDone || t.status === 'planned')) ops.push({ store: 'transactions', del: t.id });
+  }
   await apply(ops);
 }
 
@@ -433,16 +589,25 @@ export async function restoreOccurrence(ruleId, tx) {
   const rule = data.recurrences.get(ruleId);
   if (!rule) return restoreTransactions([tx]);
   const exceptions = { ...(rule.exceptions || {}) };
-  delete exceptions[tx.occurrenceDate];
+  delete exceptions[occKeyOf(tx)];
   await apply([{ store: 'recurrences', put: { ...rule, exceptions, updatedAt: Date.now() } }, { store: 'transactions', put: tx }]);
 }
 
-export async function unskipOccurrence(ruleId, date) {
+export async function unskipOccurrence(ruleId, key) {
   const rule = data.recurrences.get(ruleId);
   if (!rule) return;
   const exceptions = { ...(rule.exceptions || {}) };
-  delete exceptions[date];
+  delete exceptions[key];
   await apply([{ store: 'recurrences', put: { ...rule, exceptions, updatedAt: Date.now() } }]);
+}
+
+/** Encerra (ou reabre) a previsão de um mês: o que não foi usado deixa de contar, sem virar despesa. */
+export async function setForecastClosed(ruleId, month, closed = true) {
+  const rule = data.recurrences.get(ruleId);
+  if (!rule || ruleMode(rule) !== 'forecast') return;
+  const map = { ...(rule.closed || {}) };
+  if (closed) map[month] = true; else delete map[month];
+  await apply([{ store: 'recurrences', put: { ...rule, closed: map, updatedAt: Date.now() } }]);
 }
 
 /** Encerra a série a partir de `fromDate` (inclusive). Ocorrências já pagas são preservadas. */
@@ -451,14 +616,16 @@ export async function endSeries(ruleId, fromDate, { removeDoneFrom = null } = {}
   if (!rule) return;
   const ops = [];
   if (removeDoneFrom) {
-    const own = list('transactions').find((t) => t.recurrenceId === ruleId && t.occurrenceDate === removeDoneFrom && t.status === 'done');
+    const own = list('transactions').find((t) => t.recurrenceId === ruleId && occKeyOf(t) === removeDoneFrom && t.status === 'done');
     if (own) ops.push({ store: 'transactions', del: own.id });
   }
-  const endDate = addDays(fromDate, -1);
-  if (endDate < rule.startDate) ops.push({ store: 'recurrences', put: { ...rule, archived: true, endDate: rule.startDate, updatedAt: Date.now() } });
-  else ops.push({ store: 'recurrences', put: { ...rule, endDate, updatedAt: Date.now() } });
+  // Datas flexíveis e previsões encerram por mês inteiro.
+  const from = ruleMode(rule) === 'fixed' ? fromDate : firstDay(monthOf(fromDate));
+  const endDate = addDays(from, -1);
+  if (endDate < rule.startDate) ops.push({ store: 'recurrences', put: { ...rule, archived: true, endDate: rule.startDate, count: undefined, updatedAt: Date.now() } });
+  else ops.push({ store: 'recurrences', put: { ...rule, endDate, count: undefined, updatedAt: Date.now() } });
   for (const t of list('transactions')) {
-    if (t.recurrenceId === ruleId && t.occurrenceDate >= fromDate && t.status === 'planned') ops.push({ store: 'transactions', del: t.id });
+    if (t.recurrenceId === ruleId && occStart(t) >= from && t.status === 'planned') ops.push({ store: 'transactions', del: t.id });
   }
   await apply(ops);
 }
@@ -467,25 +634,49 @@ export async function endSeries(ruleId, fromDate, { removeDoneFrom = null } = {}
 export async function editSeriesFrom(ruleId, fromDate, changes) {
   const rule = data.recurrences.get(ruleId);
   if (!rule) return null;
-  if (fromDate <= rule.startDate) return saveRecurrence({ ...rule, ...changes, id: rule.id });
+  const mode = ruleMode(rule);
+  const from = mode === 'fixed' ? fromDate : firstDay(monthOf(fromDate));
+  if (from <= rule.startDate) return saveRecurrence({ ...rule, ...changes, id: rule.id });
   const nextId = uid();
-  const exceptions = Object.fromEntries(Object.entries(rule.exceptions || {}).filter(([d]) => d >= fromDate));
+  const exceptions = Object.fromEntries(Object.entries(rule.exceptions || {}).filter(([k]) => keyStart(k) >= from));
   // A continuação preserva o dia de referência (ex.: 31) mesmo começando em um mês curto.
-  const next = { ...rule, ...changes, id: nextId, startDate: changes.startDate || fromDate, exceptions, anchorDay: changes.anchorDay || rule.anchorDay || Number(rule.startDate.slice(8, 10)), createdAt: Date.now(), updatedAt: Date.now() };
+  const next = { ...rule, ...changes, id: nextId, startDate: changes.startDate || from, exceptions, createdAt: Date.now(), updatedAt: Date.now() };
+  if (mode === 'fixed') next.anchorDay = changes.anchorDay || rule.anchorDay || Number(rule.startDate.slice(8, 10));
+  if (rule.closed) next.closed = Object.fromEntries(Object.entries(rule.closed).filter(([m]) => m >= monthOf(from)));
   delete next.count;
   next.endDate = changes.endDate !== undefined ? changes.endDate : rule.endDate;
   if (next.endDate && next.endDate < next.startDate) next.endDate = null;
   const ops = [
-    { store: 'recurrences', put: { ...rule, endDate: addDays(fromDate, -1), updatedAt: Date.now() } },
+    { store: 'recurrences', put: { ...rule, endDate: addDays(from, -1), count: undefined, updatedAt: Date.now() } },
     { store: 'recurrences', put: finalizeRule({ ...next, description: String(next.description).trim() }) },
   ];
   for (const t of list('transactions')) {
-    if (t.recurrenceId !== ruleId || t.occurrenceDate < fromDate) continue;
-    if (t.status === 'planned') ops.push({ store: 'transactions', del: t.id });
-    else ops.push({ store: 'transactions', put: { ...t, recurrenceId: nextId, updatedAt: Date.now() } });
+    if (t.forecastId === ruleId && (t.date || firstDay(t.month)) >= from) { ops.push({ store: 'transactions', put: { ...t, forecastId: nextId, updatedAt: Date.now() } }); continue; }
+    if (t.recurrenceId !== ruleId || occStart(t) < from) continue;
+    if (t.status === 'planned' && !t.remainderOf && !(mode === 'flex' && t.date)) ops.push({ store: 'transactions', del: t.id });
+    else ops.push({ store: 'transactions', put: { ...t, recurrenceId: nextId, ...(t.status === 'planned' ? pick(changes, ['amount', 'description', 'categoryId', 'blockId', 'sourceId']) : {}), updatedAt: Date.now() } });
   }
   await apply(ops);
   return next;
+}
+
+const pick = (o, keys) => Object.fromEntries(keys.filter((k) => k in o).map((k) => [k, o[k]]));
+
+/**
+ * "Somente este mês": aplica as alterações a todas as ocorrências previstas do
+ * período, sem mudar a regra nem os outros meses. Ocorrências pagas ficam como estão.
+ */
+export async function editSeriesPeriod(ruleId, period, changes) {
+  const rule = data.recurrences.get(ruleId);
+  if (!rule) return [];
+  const ops = [];
+  for (const o of ruleOccurrences(rule, firstDay(period), lastDay(period))) {
+    const prev = existingOcc(rule.id, o.key);
+    if (prev?.status === 'done') continue;
+    ops.push({ store: 'transactions', put: occurrenceTx(rule, o.key, pick(changes, ['amount', 'description', 'categoryId', 'blockId', 'sourceId'])) });
+  }
+  if (ops.length) await apply(ops);
+  return ops.map((o) => o.put);
 }
 
 export async function deleteRecurrence(ruleId) {
@@ -493,12 +684,40 @@ export async function deleteRecurrence(ruleId) {
   if (!rule) return;
   const ops = [{ store: 'recurrences', del: ruleId }];
   for (const t of list('transactions')) {
+    if (t.forecastId === ruleId) { ops.push({ store: 'transactions', put: { ...t, forecastId: null, updatedAt: Date.now() } }); continue; }
     if (t.recurrenceId !== ruleId) continue;
     // Pagas permanecem como histórico; previstas materializadas são removidas.
     if (t.status === 'planned') ops.push({ store: 'transactions', del: t.id });
-    else ops.push({ store: 'transactions', put: { ...t, recurrenceId: null, occurrenceDate: null, updatedAt: Date.now() } });
+    else ops.push({ store: 'transactions', put: { ...t, recurrenceId: null, occurrenceDate: null, occurrenceKey: null, updatedAt: Date.now() } });
   }
   await apply(ops);
+}
+
+// ——— Cálculos salvos (calculadora) ———
+
+/** Salva um cálculo (estático ou dinâmico). Apenas texto e referências estruturadas; validado antes de gravar. */
+export async function saveCalculation(input) {
+  const prev = input.id ? data.calculations.get(input.id) : null;
+  const row = {
+    ...(prev || {}), ...input,
+    id: input.id || uid(),
+    name: String(input.name || '').trim().slice(0, 80),
+    expr: String(input.expr || '').slice(0, 400),
+    refs: Array.isArray(input.refs) ? input.refs.slice(0, 12).map((r) => ({ id: r.id, kind: r.kind, entityId: r.entityId || null, month: r.month || null })) : [],
+    favorite: Boolean(input.favorite),
+    createdAt: prev?.createdAt || Date.now(),
+    updatedAt: Date.now(),
+  };
+  if (row.mode === 'static') row.refs = row.refs.map((r) => ({ ...r }));
+  await apply([{ store: 'calculations', put: row }]);
+  return row;
+}
+
+export async function deleteCalculation(id) {
+  const row = data.calculations.get(id);
+  if (!row) return null;
+  await apply([{ store: 'calculations', del: id }]);
+  return row;
 }
 
 // ——— Parcelamentos ———

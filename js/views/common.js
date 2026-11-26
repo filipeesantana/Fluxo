@@ -133,16 +133,22 @@ export function txRow(item, { onOpen, onMenu, onToggle, showDate = false, fields
     if (show('category')) meta.push(item.categoryId ? categoryName(item.categoryId) : item.type === 'income' ? 'Receita' : 'Sem categoria');
     if (item.blockId && show('block')) meta.push(blockName(item.blockId));
     if (item.sourceId && show('source')) meta.push(accountName(item.sourceId));
+    else if (show('source') && item.status === 'planned' && !item.forecast) meta.push('fonte a definir');
   }
   const tags = [];
   if (item.installment) tags.push(h('span', { class: 'tag' }, `${item.installment.index}/${item.installment.count}`));
   if (item.recurrenceId) tags.push(h('span', { class: 'tag tag-icon', title: 'Recorrente' }, icon('repeat', 'icon-sm')));
   if (item.restricted) tags.push(h('span', { class: 'tag' }, 'Benefício'));
-  if (isCard(acc) && (item.type === 'expense' || item.type === 'refund') && item.month !== item.date.slice(0, 7)) {
+  if (item.slot) tags.push(h('span', { class: 'tag' }, `${item.slot}ª do mês`));
+  if (item.forecast) tags.push(h('span', { class: 'tag tag-soft', title: `Previsto ${formatMoney(item.plannedTotal)} · usado ${formatMoney(item.used)}` }, 'previsão'));
+  if (item.forecastId) tags.push(h('span', { class: 'tag tag-soft', title: 'Consome uma previsão mensal' }, 'na previsão'));
+  if (item.estimated) tags.push(h('span', { class: 'tag tag-soft', title: 'Valor estimado, a confirmar' }, 'estimado'));
+  if (item.remainderOf) tags.push(h('span', { class: 'tag tag-soft' }, 'restante'));
+  if (item.date && isCard(acc) && (item.type === 'expense' || item.type === 'refund') && item.month !== item.date.slice(0, 7)) {
     tags.push(h('span', { class: 'tag', title: dueDateOf(item.month, acc) ? `Vence em ${formatDateShort(dueDateOf(item.month, acc))}` : 'Competência ajustada' }, `fatura ${formatMonthShort(item.month)}`));
   }
   const planned = item.status === 'planned';
-  const overdue = planned && item.date < today() && item.type !== 'income';
+  const overdue = planned && Boolean(item.date) && item.date < today() && item.type !== 'income';
   const k = kindOf(item);
   const toggle = onToggle ? h('button', {
     class: `status-btn${planned ? '' : ' is-done'}${overdue ? ' is-overdue' : ''}`, type: 'button',
@@ -158,7 +164,7 @@ export function txRow(item, { onOpen, onMenu, onToggle, showDate = false, fields
       showDate ? h('span', { class: 'tx-date num' }, formatDateShort(item.date)) : null,
       h('span', { class: 'tx-text' },
         h('span', { class: 'tx-desc' }, h('span', { class: 'truncate' }, item.description || '—'), ...tags),
-        h('span', { class: 'tx-meta truncate' }, meta.join(' · '), planned ? h('span', { class: overdue ? 'warn' : '' }, overdue ? ' · atrasado' : ' · previsto') : null),
+        h('span', { class: 'tx-meta truncate' }, meta.join(' · '), planned ? h('span', { class: overdue ? 'warn' : '' }, overdue ? ' · atrasado' : item.forecast ? ` · restam ${formatMoney(item.amount)} de ${formatMoney(item.plannedTotal)}` : !item.date ? ' · data a definir' : ' · previsto') : null),
       ),
       h('span', { class: `tx-amount num ${item.type === 'income' ? 'is-income' : item.type === 'refund' ? 'is-refund' : item.type === 'transfer' ? 'is-neutral' : ''}` }, amountText(item)),
     ),

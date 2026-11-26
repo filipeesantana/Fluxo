@@ -9,7 +9,7 @@ const data = () => ({ transactions: [tx(), tx({ id: 't2', date: '2025-02-01', mo
 test('backup v2: metadados, período, contagens e checksum SHA-256', async () => {
   const b = await buildBackup(data(), new Date('2026-11-26T15:30:00'));
   assert.equal(b.format, 'fluxo-backup');
-  assert.equal(b.version, 2);
+  assert.equal(b.version, 3);
   assert.equal(b.counts.transactions, 2);
   assert.deepEqual(b.period, { from: '2025-02-01', to: '2026-11-25' });
   assert.match(b.checksum.value, /^[0-9a-f]{64}$/);
@@ -41,10 +41,15 @@ test('formato legado (1.0/2.0) continua aceito; versões futuras não', async ()
   assert.equal(r.ok, true);
   assert.equal(r.legacy, true);
   assert.equal(r.checksum, 'absent');
-  const future = await buildBackup(data()); future.version = 3;
+  const future = await buildBackup(data()); future.version = 4;
   assert.match(validateBackup(future).errors[0], /mais nova/);
   const futureSchema = await buildBackup(data()); futureSchema.schemaVersion = 99;
   assert.equal(validateBackup(futureSchema).ok, false);
+  // Backup do Fluxo 3.0 (formato 2, sem a coleção de cálculos) continua aceito.
+  const v30 = await buildBackup(data()); v30.version = 2; v30.schemaVersion = 3; delete v30.data.calculations; delete v30.counts.calculations;
+  const { sha256Hex, stableStringify } = await import('../../js/services/backup.js');
+  v30.checksum.value = await sha256Hex(stableStringify(v30.data));
+  assert.equal((await parseBackupText(JSON.stringify(v30))).ok, true);
 });
 
 test('prototype pollution e objetos inesperados são recusados', async () => {

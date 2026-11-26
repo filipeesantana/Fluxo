@@ -5,7 +5,7 @@ import { formatDate, formatMonth } from '../utils/dates.js';
 /*
  * Formato de backup do Fluxo
  * --------------------------
- * format 'fluxo-backup', version 2:
+ * format 'fluxo-backup', version 3 (2 também é aceito; a 3 acrescenta 'calculations'):
  *   { format, version, backupId, createdAt, appVersion, schemaVersion,
  *     counts: { store: n }, period: { from, to } | null,
  *     checksum: { algorithm: 'SHA-256', value }, data: { store: rows[] } }
@@ -21,7 +21,8 @@ import { formatDate, formatMonth } from '../utils/dates.js';
  */
 
 export const BACKUP_FORMAT = 'fluxo-backup';
-export const BACKUP_VERSION = 2;
+// v3 (Fluxo 3.1): coleção de cálculos salvos e novos campos de recorrência. v2 continua aceito.
+export const BACKUP_VERSION = 3;
 export const LEGACY_FORMAT = 'guia-financeiro-backup';
 export const ENCRYPTED_FORMAT = 'fluxo-backup-encrypted';
 export const MAX_BACKUP_BYTES = 50 * 1024 * 1024;
@@ -84,7 +85,7 @@ export function backupFileName(now = new Date(), { encrypted = false } = {}) {
 }
 
 const REFS = {
-  transactions: [['categoryId', 'categories'], ['blockId', 'blocks'], ['sourceId', 'accounts'], ['toAccountId', 'accounts'], ['planId', 'installmentPlans'], ['recurrenceId', 'recurrences']],
+  transactions: [['categoryId', 'categories'], ['blockId', 'blocks'], ['sourceId', 'accounts'], ['toAccountId', 'accounts'], ['planId', 'installmentPlans'], ['recurrenceId', 'recurrences'], ['forecastId', 'recurrences']],
   recurrences: [['categoryId', 'categories'], ['blockId', 'blocks'], ['sourceId', 'accounts']],
   installmentPlans: [['sourceId', 'accounts']],
   investmentEvents: [['investmentId', 'investments'], ['accountId', 'accounts']],
@@ -141,8 +142,9 @@ export function validateBackup(obj) {
   const occ = new Set();
   let dupOcc = 0;
   for (const t of obj.data.transactions || []) {
-    if (!t.recurrenceId || !t.occurrenceDate) continue;
-    const k = `${t.recurrenceId}|${t.occurrenceDate}`;
+    const key = t.occurrenceKey || t.occurrenceDate;
+    if (!t.recurrenceId || !key || t.remainderOf) continue;
+    const k = `${t.recurrenceId}|${key}`;
     if (occ.has(k)) dupOcc++; else occ.add(k);
   }
   if (dupOcc) errors.push(`${dupOcc} ocorrência(s) recorrente(s) duplicada(s).`);
@@ -155,11 +157,17 @@ export function validateBackup(obj) {
   };
 }
 
-/** Verifica o checksum SHA-256 (formato 2). */
+// Coleções cobertas pelo checksum em cada versão do formato. A soma de um
+// backup antigo é sempre conferida com as coleções que existiam quando ele foi
+// gerado (senão, cada coleção nova invalidaria todos os backups anteriores).
+const STORES_BY_FORMAT = { 2: STORES.filter((s) => s !== 'calculations'), 3: STORES };
+
+/** Verifica o checksum SHA-256 (formatos 2 e 3). */
 export async function verifyChecksum(obj) {
   if (obj.format !== BACKUP_FORMAT) return { status: 'absent' };
   if (!isPlainObject(obj.checksum) || obj.checksum.algorithm !== 'SHA-256' || typeof obj.checksum.value !== 'string') return { status: 'invalid' };
-  const data = Object.fromEntries(STORES.map((s) => [s, obj.data[s] || []]));
+  const stores = STORES_BY_FORMAT[obj.version] || STORES;
+  const data = Object.fromEntries(stores.map((s) => [s, obj.data[s] || []]));
   const value = await sha256Hex(stableStringify(data));
   return { status: value === obj.checksum.value ? 'ok' : 'mismatch' };
 }
@@ -242,7 +250,7 @@ export function transactionsToCSV(transactions, { categories, blocks, accounts }
   const name = (map, id) => (id && map.get(id)?.name) || '';
   const header = ['Data', 'Competência', 'Tipo', 'Situação', 'Descrição', 'Valor', 'Categoria', 'Bloco', 'Fonte', 'Destino', 'Parcela'];
   const rows = [...transactions]
-    .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0))
+    .sort((a, b) => ((a.date || `${a.month}-32`) < (b.date || `${b.month}-32`) ? -1 : (a.date || `${a.month}-32`) > (b.date || `${b.month}-32`) ? 1 : 0))
     .map((t) => {
       const sign = t.type === 'expense' ? -1 : t.type === 'transfer' ? 0 : 1;
       const value = (sign === 0 ? t.amount : sign * t.amount) / 100;

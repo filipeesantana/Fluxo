@@ -106,8 +106,16 @@ async function test(name, fn) {
     console.log(`  ✓ ${name}`);
   } catch (err) {
     results.push({ name, ok: false, ms: Date.now() - t0, error: err.message });
-    console.log(`  ✗ ${name}\n      ${err.message.split('\n')[0]}`);
+    console.log(`  ✗ ${name}\n      ${process.env.VERBOSE ? err.message : err.message.split('\n')[0]}`);
   }
+}
+
+/** Instante UTC em que o relógio local de `tz` marca a data/hora indicada. */
+function utcForLocal(tz, y, mo, d, hh, mm) {
+  const guess = Date.UTC(y, mo - 1, d, hh, mm);
+  const parts = Object.fromEntries(new Intl.DateTimeFormat('en-US', { timeZone: tz, hourCycle: 'h23', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }).formatToParts(new Date(guess)).map((p) => [p.type, p.value]));
+  const asUtc = Date.UTC(Number(parts.year), Number(parts.month) - 1, Number(parts.day), Number(parts.hour), Number(parts.minute));
+  return guess - (asUtc - guess);
 }
 
 /** Exporta o backup completo (JSON comum) pela interface e devolve o download. */
@@ -455,7 +463,7 @@ async function run() {
       assert(!/from '\//.test(src) && !/import\('\//.test(src), `import absoluto em ${f}`);
       assert(!/\beval\s*\(|new Function\s*\(/.test(src), `eval/new Function em ${f}`);
       // Só são permitidos o namespace SVG e os dois links informativos de “Sobre o Fluxo” (abertos pelo usuário, nunca buscados pelo app).
-      const rest = src.replace(/http:\/\/www\.w3\.org\/2000\/svg/g, '').replace(/'https:\/\/github\.com\/filipeesantana\/fluxo'/g, '').replace(/'https:\/\/filipeesantana\.github\.io\/fluxo\/'/g, '');
+      const rest = src.replace(/http:\/\/www\.w3\.org\/2000\/svg/g, '').replace(/'https:\/\/github\.com\/filipeesantana\/Fluxo'/g, '').replace(/'https:\/\/filipeesantana\.github\.io\/Fluxo\/'/g, '');
       assert(!/https?:\/\//.test(rest), `URL externa em ${f}`);
     }
     await noErrors(page);
@@ -487,7 +495,7 @@ async function run() {
     await context.close();
   });
 
-  await test('Cenário 19 — atualização do esquema v1 → v3 preserva o banco existente', async () => {
+  await test('Cenário 19 — atualização do esquema v1 → v4 preserva o banco existente', async () => {
     const { context, page } = await newPage();
     await page.goto('about:blank');
     await page.goto(`${base}manifest.webmanifest`);
@@ -523,7 +531,7 @@ async function run() {
       db.close();
       return { v, idx, ids: repo.list('transactions').map((t) => t.id).sort() };
     });
-    eq(info.v, 3, 'versão do banco');
+    eq(info.v, 4, 'versão do banco');
     assert(info.idx.includes('occurrence'), 'índice único de ocorrências criado');
     eq(JSON.stringify(info.ids), JSON.stringify(['a', 'dup1']), 'dados preservados e duplicata removida');
     await noErrors(page);
@@ -1053,15 +1061,15 @@ async function run() {
     await context.close();
   });
 
-  await test('2.0 — resoluções: 1366×768, 1920×1080, 2560×1440, ultrawide, tablet e celular sem rolagem horizontal', async () => {
-    const sizes = [[1366, 768], [1920, 1080], [2560, 1440], [3440, 1440], [820, 1180], [390, 844]];
+  await test('2.0 — resoluções: 1366×768, 1920×1080, 2560×1440, ultrawide, tablet e celulares de 320 a 430 px sem rolagem horizontal', async () => {
+    const sizes = [[1366, 768], [1920, 1080], [2560, 1440], [3440, 1440], [820, 1180], [430, 932], [390, 844], [360, 780], [320, 640]];
     for (const [w, hgt] of sizes) {
       const { context, page } = await newPage({ viewport: { width: w, height: hgt }, isMobile: w < 500, hasTouch: w < 900 });
       await api(page, async (repo) => {
         const b = await repo.createNamed('blocks', { name: 'Pessoal' });
         for (let i = 1; i <= 12; i++) await repo.saveTransaction({ type: i % 4 ? 'expense' : 'income', status: i > 8 ? 'planned' : 'done', amount: 1000 * i, date: `2026-11-${String(i * 2).padStart(2, '0')}`, description: `Item ${i}`, blockId: b.id });
       });
-      for (const hash of ['#/visao-geral', '#/lancamentos', '#/planejamento/calendario', '#/planejamento/projecao', '#/investimentos', '#/configuracoes']) {
+      for (const hash of ['#/visao-geral', '#/lancamentos', '#/planejamento/calendario', '#/planejamento/compromissos', '#/planejamento/projecao', '#/investimentos', '#/configuracoes']) {
         await page.goto(`${base}${hash}`);
         await page.waitForSelector('.page-head');
         await page.waitForTimeout(120);
@@ -1306,16 +1314,19 @@ async function run() {
     await page.keyboard.press('ArrowLeft');
     const moved = await ids();
     eq(moved.indexOf('dist-block'), i - 1, 'movido uma posição pelo teclado');
-    await page.locator('.widget[data-id="kpi-income-received"] select[aria-label^="Tamanho"]').selectOption('m');
-    await page.locator('.widget[data-id="dist-category"] select[aria-label^="Tipo de visualização"]').selectOption('table');
+    const settings = async (id, item) => { await page.locator(`.widget[data-id="${id}"] .widget-settings`).click(); await page.locator('.menu-item', { hasText: item }).first().click(); };
+    await settings('kpi-income-received', 'Médio');
+    await settings('dist-category', 'Tabela resumida');
     await page.locator('.widget[data-id="insights"]').getByRole('button', { name: /^Ocultar/ }).click();
-    await page.locator('.widget[data-id="kpi-surplus"]').getByRole('button', { name: /^Cor de/ }).click();
+    eq(await page.locator('.wgrid .widget[data-id="insights"]').count(), 0, 'oculto sai da grade também no modo de edição');
+    assert(await page.locator('.hidden-tray', { hasText: 'Leituras do mês' }).count() === 1, 'oculto aparece na bandeja');
+    await settings('kpi-surplus', 'Cor de destaque');
     await page.locator('.menu-item', { hasText: 'Verde-azulado' }).click();
-    // Desfazer a última alteração (cor) e refazê-la para conferir o histórico.
+    // Desfazer a última alteração (cor), refazer e conferir o histórico.
     await page.locator('.edit-bar').getByRole('button', { name: 'Desfazer' }).click();
     eq(await page.locator('.widget[data-id="kpi-surplus"]').getAttribute('data-color'), null, 'desfazer volta a cor');
-    await page.locator('.widget[data-id="kpi-surplus"]').getByRole('button', { name: /^Cor de/ }).click();
-    await page.locator('.menu-item', { hasText: 'Verde-azulado' }).click();
+    await page.locator('.edit-bar').getByRole('button', { name: 'Refazer' }).click();
+    eq(await page.locator('.widget[data-id="kpi-surplus"]').getAttribute('data-color'), 'custom', 'refazer reaplica a cor');
     await page.locator('.edit-bar').getByRole('button', { name: 'Concluir' }).click();
     await page.waitForSelector('.wgrid:not(.is-editing)');
     await page.waitForTimeout(500);
@@ -1341,10 +1352,13 @@ async function run() {
     const ids = () => page.locator('.wgrid .widget').evaluateAll((els) => els.map((e) => e.dataset.id));
     const before = await ids();
     const h = await page.locator('.widget[data-id="dist-source"] .widget-handle').boundingBox();
-    const target = await page.locator('.widget[data-id="dist-category"]').boundingBox();
     await page.mouse.move(h.x + h.width / 2, h.y + h.height / 2);
     await page.mouse.down();
-    for (let s = 1; s <= 12; s++) await page.mouse.move(h.x + (target.x + 20 - h.x) * s / 12, h.y + (target.y + target.height / 2 - h.y) * s / 12);
+    // Acompanha o alvo a cada passo (como um usuário faria se a grade se rearranjar).
+    for (let s = 1; s <= 12; s++) {
+      const target = await page.locator('.widget[data-id="dist-category"]').boundingBox();
+      await page.mouse.move(h.x + (target.x + 20 - h.x) * s / 12, h.y + (target.y + 30 - h.y) * s / 12);
+    }
     await page.waitForTimeout(100);
     eq(await page.locator('.widget-placeholder').count(), 1, 'marcador de posição visível');
     await page.mouse.up();
@@ -1490,7 +1504,7 @@ async function run() {
     await dl.saveAs(file);
     const b = JSON.parse(await readFile(file, 'utf8'));
     eq(b.format, 'fluxo-backup', 'formato');
-    eq(b.version, 2, 'versão do formato');
+    eq(b.version, 3, 'versão do formato');
     assert(/^[0-9a-f]{64}$/.test(b.checksum?.value || ''), 'checksum SHA-256');
     eq(b.counts.transactions, 1, 'contagens no cabeçalho');
     assert(b.data.meta.some((m) => m.key === 'ui.layout'), 'personalização incluída');
@@ -1661,8 +1675,8 @@ async function run() {
     await context.close();
   });
 
-  await test('3.0 — Publicação em /fluxo/ (repositório renomeado): todas as seções abrem sem erros', async () => {
-    const alt = await startServer({ base: '/fluxo/' });
+  await test('3.0 — Publicação em /Fluxo/ (repositório renomeado): todas as seções abrem sem erros', async () => {
+    const alt = await startServer({ base: '/Fluxo/' });
     const context = await browser.newContext({ viewport: { width: 1280, height: 860 }, locale: 'pt-BR', timezoneId: 'America/Sao_Paulo' });
     await context.clock.setFixedTime(NOW);
     const page = await context.newPage();
@@ -1701,6 +1715,506 @@ async function run() {
       await noErrors(page);
       await context.close();
     }
+  });
+
+  // ——————————————————— Fluxo 3.1 ———————————————————
+  const sumOf = (page, month) => api(page, async (repo, m) => { const { summarize } = await import('./js/services/finance.js'); const s = summarize(repo.context(), m); return { done: s.expenseDone, pending: s.expensePending, total: s.expenseTotal, left: s.forecastLeft }; }, month);
+  async function createRepeat(page, { amount, description, date, preset = 'monthly', mode, perMonth, days, end, source }) {
+    const m = await openForm(page);
+    await m.locator('input[name=amount]').fill(amount);
+    await m.locator('input[name=description]').fill(description);
+    await m.locator('input[name=date]').fill(date);
+    if (source) await pick(m, 'source', source);
+    await m.locator('select[name=repeat]').selectOption(preset);
+    if (mode) await m.locator(`.mode-opt[data-mode="${mode}"]`).click();
+    if (perMonth) await m.locator('input[name=repeatPerMonth]').fill(perMonth);
+    if (days) await m.locator('input[name=repeatDays]').fill(days);
+    if (end) { await m.locator('.repeat-options summary').click(); await m.locator('input[name=repeatEnd]').fill(end); }
+    await save(m);
+  }
+
+  await test('3.1 — Cenário 1: psicóloga com datas flexíveis (pagar, concluir e dezembro independente)', async () => {
+    const { context, page } = await newPage();
+    await createRepeat(page, { amount: '50', description: 'Psicóloga', date: '2026-11-04', mode: 'flex', perMonth: '2' });
+    await page.goto(`${base}#/planejamento/compromissos`);
+    const card = page.locator('.commit', { hasText: 'Psicóloga' });
+    await card.waitFor();
+    // 1ª consulta veio paga do formulário (04/11 já passou); define a 2ª para 18/11.
+    await card.locator('.occ-row').nth(1).locator('input.occ-date').fill('2026-11-18');
+    await card.locator('.occ-row').nth(1).locator('input.occ-date').dispatchEvent('change');
+    await waitText(page, async () => JSON.stringify(await sumOf(page, '2026-11')), JSON.stringify({ done: 5000, pending: 5000, total: 10000, left: 0 }));
+    await waitText(page, () => card.locator('.commit-progress').textContent().then(norm), /^1 de 2 paga/);
+    await card.locator('.occ-row').nth(1).locator('.occ-check').click();
+    await waitText(page, async () => String(await page.locator('.commit.is-done', { hasText: 'Psicóloga' }).count()), '1');
+    eq(JSON.stringify(await sumOf(page, '2026-11')), JSON.stringify({ done: 10000, pending: 0, total: 10000, left: 0 }), 'novembro concluído');
+    await page.keyboard.press('ArrowRight');
+    const dec = page.locator('.commit', { hasText: 'Psicóloga' });
+    await waitText(page, () => dec.locator('.commit-progress').textContent().then(norm), /^0 de 2/);
+    eq(await dec.locator('.pill', { hasText: 'Data a definir' }).count(), 2, 'dezembro: duas consultas sem data inventada');
+    eq(JSON.stringify(await sumOf(page, '2026-12')), JSON.stringify({ done: 0, pending: 10000, total: 10000, left: 0 }), 'dezembro previsto');
+    eq(await api(page, (repo) => repo.list('transactions').length), 2, 'nenhum lançamento extra criado');
+    await noErrors(page);
+    await context.close();
+  });
+
+  await test('3.1 — Cenário 2: a cada 14 dias gera 3 ocorrências em dezembro (R$ 150)', async () => {
+    const { context, page } = await newPage();
+    await createRepeat(page, { amount: '50', description: 'Consulta', date: '2026-11-04', preset: 'biweekly' });
+    const dates = await api(page, async (repo) => { const { ruleOccurrences } = await import('./js/services/recurrence.js'); return ruleOccurrences(repo.list('recurrences')[0], '2026-11-01', '2027-01-15').map((o) => o.date); });
+    eq(JSON.stringify(dates), JSON.stringify(['2026-11-04', '2026-11-18', '2026-12-02', '2026-12-16', '2026-12-30', '2027-01-13']), 'datas reais de 14 em 14 dias');
+    eq((await sumOf(page, '2026-12')).total, 15000, 'dezembro com três ocorrências');
+    eq((await sumOf(page, '2026-11')).total, 10000, 'novembro com duas');
+    await noErrors(page);
+    await context.close();
+  });
+
+  await test('3.1 — Cenário 3: recorrência independe da fonte (Pix, dinheiro, débito, cartão) e da fonte definida depois', async () => {
+    const { context, page } = await newPage();
+    const r = await api(page, async (repo) => {
+      const conta = await repo.createNamed('accounts', { name: 'Conta', kind: 'checking' });
+      const dinheiro = await repo.createNamed('accounts', { name: 'Dinheiro', kind: 'cash' });
+      const cartao = await repo.createNamed('accounts', { name: 'Cartão', kind: 'credit', closingDay: 3, dueDay: 10 });
+      const base = { type: 'expense', amount: 1000, frequency: 'monthly', startDate: '2026-11-15' };
+      await repo.createRecurrence({ ...base, description: 'Pix', sourceId: conta.id, method: 'pix' });
+      await repo.createRecurrence({ ...base, description: 'Dinheiro', sourceId: dinheiro.id });
+      await repo.createRecurrence({ ...base, description: 'Débito', sourceId: conta.id, method: 'debit' });
+      await repo.createRecurrence({ ...base, description: 'Cartão', sourceId: cartao.id });
+      await repo.createRecurrence({ ...base, description: 'A definir', sourceId: null });
+      const { summarize } = await import('./js/services/finance.js');
+      const s = summarize(repo.context(), '2026-12');
+      return { rules: repo.list('recurrences').length, total: s.expenseTotal, bills: s.cardBills.map((b) => b.total) };
+    });
+    eq(r.rules, 5, 'todas criadas');
+    eq(r.total, 5000, 'dezembro: 4 diretas + compra de 15/11 no cartão (fatura de dezembro)');
+    eq(JSON.stringify(r.bills), '[1000]', 'compra no cartão vai para a fatura, não para o caixa');
+    // Fonte definida no pagamento.
+    await page.goto(`${base}#/planejamento/compromissos`);
+    await page.keyboard.press('ArrowRight');
+    const row = page.locator('.commit', { hasText: 'A definir' }).locator('.occ-row').first();
+    await row.locator('button[aria-haspopup="menu"]').click();
+    await page.locator('.menu-item', { hasText: 'Confirmar pagamento…' }).click();
+    const d = page.locator('.pay-modal');
+    await d.locator('select[name=paySource]').selectOption({ label: 'Dinheiro' });
+    await d.getByRole('button', { name: 'Confirmar pagamento' }).click();
+    await waitText(page, '.toast', /pago/);
+    const tx = await api(page, (repo) => repo.list('transactions').find((t) => t.description === 'A definir'));
+    eq(tx.status, 'done', 'pago');
+    eq(Boolean(tx.sourceId), true, 'fonte gravada no pagamento');
+    await noErrors(page);
+    await context.close();
+  });
+
+  await test('3.1 — Cenário 4: alterar a data de uma ocorrência flexível não duplica', async () => {
+    const { context, page } = await newPage();
+    await api(page, (repo) => repo.createRecurrence({ type: 'expense', description: 'Fisio', amount: 8000, frequency: 'monthly', mode: 'flex', perPeriod: 2, startDate: '2026-12-01' }));
+    await page.goto(`${base}#/planejamento/compromissos`);
+    await page.keyboard.press('ArrowRight');
+    const input = page.locator('.commit', { hasText: 'Fisio' }).locator('.occ-row').first().locator('input.occ-date');
+    await input.fill('2026-12-10'); await input.dispatchEvent('change');
+    await waitText(page, async () => String(await api(page, (repo) => repo.list('transactions').length)), '1');
+    const again = page.locator('.commit', { hasText: 'Fisio' }).locator('.occ-row').first().locator('input.occ-date');
+    await again.fill('2026-12-15'); await again.dispatchEvent('change');
+    await waitText(page, async () => JSON.stringify(await api(page, (repo) => repo.list('transactions').map((t) => [t.date, t.occurrenceKey]))), JSON.stringify([['2026-12-15', '2026-12#1']]));
+    eq((await sumOf(page, '2026-12')).total, 16000, 'continua R$ 160 no mês');
+    // Regressão: duas gravações simultâneas na mesma aba não podem ser recusadas como conflito.
+    const both = await api(page, async (repo) => {
+      const rule = repo.list('recurrences')[0];
+      await Promise.all([repo.setOccurrenceDate(rule.id, '2026-12#2', '2026-12-05'), repo.setOccurrenceDate(rule.id, '2026-12#2', '2026-12-06')]);
+      return repo.list('transactions').filter((x) => x.occurrenceKey === '2026-12#2').map((x) => x.date);
+    });
+    eq(JSON.stringify(both), '["2026-12-06"]', 'última gravação vence, sem duplicar nem falhar');
+    await noErrors(page);
+    await context.close();
+  });
+
+  await test('3.1 — Cenário 5: transformar lançamento existente em recorrente mantém o registro único', async () => {
+    const { context, page } = await newPage();
+    await api(page, (repo) => repo.saveTransaction({ id: 'c1', type: 'expense', status: 'done', amount: 5000, date: '2026-11-04', description: 'Consulta' }));
+    await page.locator('.tx-row', { hasText: 'Consulta' }).locator('.tx-more').click();
+    await page.locator('.menu-item', { hasText: 'Transformar em recorrente' }).click();
+    const m = page.locator('.modal', { hasText: 'Transformar em recorrente' });
+    await m.locator('.mode-opt[data-mode="flex"]').click();
+    await m.locator('input[name=repeatPerMonth]').fill('2');
+    await m.getByRole('button', { name: 'Transformar' }).click();
+    await waitText(page, '.toast', /recorrente/);
+    const r = await api(page, (repo) => ({ tx: repo.list('transactions').map((t) => [t.id, t.occurrenceKey, t.status]), rule: repo.list('recurrences').map((x) => [x.mode, x.perPeriod]) }));
+    eq(JSON.stringify(r.tx), JSON.stringify([['c1', '2026-11#1', 'done']]), 'o original vira a 1ª ocorrência');
+    eq(JSON.stringify(r.rule), JSON.stringify([['flex', 2]]), 'regra flexível');
+    eq(JSON.stringify(await sumOf(page, '2026-11')), JSON.stringify({ done: 5000, pending: 5000, total: 10000, left: 0 }), 'sem cópia do original');
+    await noErrors(page);
+    await context.close();
+  });
+
+  await test('3.1 — Cenário 6: replicar para três meses específicos (previstas, sem herdar o pago)', async () => {
+    const { context, page } = await newPage();
+    await api(page, (repo) => repo.saveTransaction({ id: 'r0', type: 'expense', status: 'done', amount: 12000, date: '2026-11-08', description: 'Manutenção' }));
+    await page.locator('.tx-row', { hasText: 'Manutenção' }).locator('.tx-more').click();
+    await page.locator('.menu-item', { hasText: 'Replicar para outros meses' }).click();
+    const m = page.locator('.replicate-modal');
+    for (const mm of ['2027-01', '2027-03', '2027-05']) await m.locator(`.month-pick[data-month="${mm}"]`).click();
+    await waitText(page, () => m.locator('.replicate-summary').textContent().then(norm), /3 lançamentos previstos serão criados/);
+    await m.getByRole('button', { name: 'Replicar' }).dblclick();
+    await waitText(page, '.toast', /3 cópias/);
+    const rows = await api(page, (repo) => repo.list('transactions').filter((t) => t.id !== 'r0').map((t) => [t.month, t.date, t.status]).sort());
+    eq(JSON.stringify(rows), JSON.stringify([['2027-01', '2027-01-08', 'planned'], ['2027-03', '2027-03-08', 'planned'], ['2027-05', '2027-05-08', 'planned']]), 'somente os meses escolhidos, como previstas');
+    await noErrors(page);
+    await context.close();
+  });
+
+  await test('3.1 — Cenário 7: previsão de combustível consome R$ 300, resta R$ 100; R$ 150 a mais gera excedente de R$ 50', async () => {
+    const { context, page } = await newPage();
+    await createRepeat(page, { amount: '400', description: 'Combustível', date: '2026-11-01', mode: 'forecast' });
+    await page.goto(`${base}#/planejamento/compromissos`);
+    for (const [v, d] of [['100', '2026-11-04'], ['80', '2026-11-11'], ['120', '2026-11-19']]) {
+      await page.locator('.commit.is-forecast').getByRole('button', { name: 'Registrar gasto' }).click();
+      const m = page.locator('.entry-modal');
+      await m.locator('input[name=amount]').fill(v);
+      await m.locator('input[name=date]').fill(d);
+      eq(await m.locator('select[name=forecast] option:checked').textContent().then((x) => x.startsWith('Combustível')), true, 'vinculado à previsão');
+      await m.locator('.modal-foot button[type=submit]').click();
+      const similar = page.locator('.entry-modal .banner-warn');
+      if (await similar.isVisible().catch(() => false)) await similar.getByRole('button', { name: 'Registrar mesmo assim' }).click();
+      await m.waitFor({ state: 'detached' });
+    }
+    eq(JSON.stringify(await sumOf(page, '2026-11')), JSON.stringify({ done: 30000, pending: 0, total: 40000, left: 10000 }), 'R$ 300 realizado + R$ 100 restante (não R$ 700)');
+    await api(page, (repo) => repo.saveTransaction({ type: 'expense', status: 'done', amount: 15000, date: '2026-11-24', description: 'Combustível', forecastId: repo.list('recurrences')[0].id }));
+    eq(JSON.stringify(await sumOf(page, '2026-11')), JSON.stringify({ done: 45000, pending: 0, total: 45000, left: 0 }), 'realizado R$ 450');
+    await waitText(page, () => page.locator('.commit.is-forecast').textContent().then(norm), /R\$ 50,00 acima do previsto/);
+    await page.locator('.commit.is-forecast').getByRole('button', { name: 'Encerrar mês' }).click().catch(() => {});
+    await noErrors(page);
+    await context.close();
+  });
+
+  await test('3.1 — Cenário 8: data final pelo formulário — nada fora do intervalo', async () => {
+    const { context, page } = await newPage();
+    await createRepeat(page, { amount: '30', description: 'Curso', date: '2026-11-29', mode: 'days', days: '29, 31', end: '2027-02-28' });
+    const occ = await api(page, async (repo) => { const { ruleOccurrences } = await import('./js/services/recurrence.js'); return ruleOccurrences(repo.list('recurrences')[0], '2026-01-01', '2028-12-31').map((o) => o.date); });
+    eq(JSON.stringify(occ), JSON.stringify(['2026-11-29', '2026-11-30', '2026-12-29', '2026-12-31', '2027-01-29', '2027-01-31', '2027-02-28', '2027-02-28']), 'dias 29 e 31, fevereiro curto, termina em 28/02');
+    eq((await sumOf(page, '2027-03')).total, 0, 'nada depois do fim');
+    await noErrors(page);
+    await context.close();
+  });
+
+  await test('3.1 — Cenários 9/10/11: grade sem sobreposição, organizar automaticamente, ocultos fora da grade e formatos persistentes', async () => {
+    const { context, page } = await newPage();
+    await api(page, (repo) => repo.saveTransaction({ type: 'expense', status: 'done', amount: 4500, date: '2026-11-05', description: 'Mercado' }));
+    await page.getByRole('button', { name: 'Personalizar' }).click();
+    const settings = async (id, item) => { await page.locator(`.widget[data-id="${id}"] .widget-settings`).click(); await page.locator('.menu-item', { hasText: item }).first().click(); };
+    await settings('kpi-surplus', 'Pequeno');
+    await settings('kpi-invest', 'Comparação com o mês anterior');
+    await settings('movements', 'Metade');
+    await settings('dist-category', 'Rosca');
+    await page.locator('.edit-bar').getByRole('button', { name: 'Organizar automaticamente' }).click();
+    await page.waitForTimeout(400);
+    const overlap = await page.evaluate(() => {
+      const rs = [...document.querySelectorAll('.wgrid .widget')].map((e) => ({ id: e.dataset.id, r: e.getBoundingClientRect() }));
+      const hits = [];
+      for (let i = 0; i < rs.length; i++) for (let j = i + 1; j < rs.length; j++) {
+        const a = rs[i].r, b = rs[j].r;
+        if (a.left < b.right - 1 && b.left < a.right - 1 && a.top < b.bottom - 1 && b.top < a.bottom - 1) hits.push(`${rs[i].id}×${rs[j].id}`);
+      }
+      return hits;
+    });
+    eq(JSON.stringify(overlap), '[]', 'nenhum componente sobreposto');
+    await page.locator('.widget[data-id="signals"]').getByRole('button', { name: /^Ocultar/ }).click();
+    eq(await page.locator('.wgrid .widget[data-id="signals"]').count(), 0, 'oculto não ocupa espaço');
+    await page.locator('.edit-bar').getByRole('button', { name: 'Componentes' }).click();
+    await page.locator('.lib-row', { hasText: 'Atenção' }).getByRole('button', { name: 'Adicionar' }).click();
+    await page.waitForSelector('.wgrid .widget[data-id="signals"]');
+    await page.locator('.edit-bar').getByRole('button', { name: 'Concluir' }).click();
+    await page.waitForTimeout(500);
+    for (let k = 0; k < 2; k++) {
+      if (k) { await page.reload(); await page.waitForSelector('[data-kpi]'); }
+      assert(await page.locator('.widget[data-id="kpi-surplus"]').evaluate((e) => e.classList.contains('w-s')), 'tamanho pequeno preservado');
+      assert(await page.locator('.widget[data-id="kpi-invest"] .kpi-compare, .widget[data-id="kpi-invest"] .kpi-sub').count() > 0, 'formato de comparação');
+      assert(await page.locator('.widget[data-id="dist-category"] .donut').count() === 1, 'rosca preservada');
+    }
+    // Trocar de mês, de seção e de tema não muda a organização.
+    await page.keyboard.press('ArrowRight');
+    await page.goto(`${base}#/lancamentos`); await page.goto(`${base}#/visao-geral`);
+    await page.waitForSelector('[data-kpi]');
+    assert(await page.locator('.widget[data-id="kpi-surplus"]').evaluate((e) => e.classList.contains('w-s')), 'após navegar');
+    await noErrors(page);
+    await context.close();
+  });
+
+  await test('3.1 — Personalização no celular é guardada à parte e não altera o desktop', async () => {
+    const { context, page } = await newPage();
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.reload(); await page.waitForSelector('[data-kpi]');
+    await page.getByRole('button', { name: 'Personalizar' }).click();
+    await page.locator('.widget[data-id="insights"]').getByRole('button', { name: /^Ocultar/ }).click();
+    await page.locator('.edit-bar').getByRole('button', { name: 'Concluir' }).click();
+    await page.waitForTimeout(500);
+    const keys = await api(page, (repo) => Object.keys(repo.get('meta', 'ui.layout')?.value?.sections || {}));
+    eq(JSON.stringify(keys), JSON.stringify(['overview@m']), 'perfil do celular');
+    await page.setViewportSize({ width: 1360, height: 900 });
+    await page.reload(); await page.waitForSelector('[data-kpi]');
+    eq(await page.locator('.widget[data-id="insights"]').count(), 1, 'desktop intacto');
+    await noErrors(page);
+    await context.close();
+  });
+
+  await test('3.1 — Cenários 12/13/14/15: calculadora percentual, dinâmica, estática e referência inválida', async () => {
+    const { context, page } = await newPage();
+    await api(page, async (repo) => {
+      await repo.saveTransaction({ id: 'inc', type: 'income', status: 'done', amount: 300000, date: '2026-11-05', description: 'Salário' });
+      await repo.saveTransaction({ id: 'exp', type: 'expense', status: 'done', amount: 210000, date: '2026-11-06', description: 'Aluguel' });
+      await repo.saveGoal({ id: 'g1', name: 'Moto', target: 800000, initial: 0, monthly: 0, startMonth: '2026-11' });
+    });
+    await page.keyboard.press('c');
+    await page.waitForSelector('.calc.is-open');
+    const expr = page.locator('.calc-expr');
+    const res = () => page.locator('.calc-result').textContent();
+    for (const [e, v] of [['10% de 800', '80'], ['800 + 10%', '880'], ['800 − 10%', '720'], ['200 / 800 * 100', '25']]) { await expr.fill(e); eq(await res(), v, e); }
+    await expr.fill('5 / 0'); await expr.press('Enter');
+    await waitText(page, '.calc-error', 'Divisão por zero');
+    // Dinâmico: 70% da sobra projetada.
+    await expr.fill('');
+    await page.locator('.calc-flux').click();
+    await page.locator('.calc-ref-modal select[aria-label="Informação"]').selectOption('projectedSurplus');
+    await page.locator('.calc-ref-modal').getByRole('button', { name: 'Inserir' }).click();
+    await expr.press('End'); await expr.type(' × 70%');
+    eq(await res(), '630', 'R$ 900 × 70%');
+    await page.locator('.calc').getByRole('button', { name: 'Salvar' }).click();
+    await page.locator('input[name=calcName]').fill('Reserva dinâmica');
+    await page.locator('.modal').getByRole('button', { name: 'Salvar' }).click();
+    await page.waitForSelector('input[name=calcName]', { state: 'detached' });
+    await page.waitForSelector('.calc-saved-row');
+    // Estático: 70% de 900.
+    await page.locator('.calc-tab', { hasText: 'Calcular' }).click();
+    await expr.fill('70% de 900');
+    await page.locator('.calc').getByRole('button', { name: 'Salvar' }).click();
+    await page.locator('input[name=calcName]').fill('Reserva estática');
+    await page.locator('.modal').getByRole('button', { name: 'Salvar' }).click();
+    await page.waitForSelector('input[name=calcName]', { state: 'detached' });
+    await page.waitForSelector('.calc-saved-row >> nth=1');
+    // Dinâmico com meta que depois é excluída.
+    await page.locator('.calc-tab', { hasText: 'Calcular' }).click();
+    await expr.fill('');
+    await page.locator('.calc-flux').click();
+    await page.locator('.calc-ref-modal select[aria-label="Informação"]').selectOption('goalTarget');
+    await page.locator('.calc-ref-modal').getByRole('button', { name: 'Inserir' }).click();
+    await expr.press('End'); await expr.type(' ÷ 12');
+    await page.locator('.calc').getByRole('button', { name: 'Salvar' }).click();
+    await page.locator('input[name=calcName]').fill('Parcela da meta');
+    await page.locator('.modal').getByRole('button', { name: 'Salvar' }).click();
+    await page.waitForSelector('input[name=calcName]', { state: 'detached' });
+    await page.waitForSelector('.calc-saved-row >> nth=2');
+    const before = await api(page, (repo) => JSON.stringify(repo.list('transactions')));
+    await api(page, async (repo) => { await repo.saveTransaction({ ...repo.get('transactions', 'exp'), amount: 180000 }); await repo.deleteGoal('g1'); });
+    const row = (n) => page.locator('.calc-saved-row', { hasText: n });
+    await waitText(page, () => row('Reserva dinâmica').locator('.calc-saved-value').textContent(), '840');
+    eq(await row('Reserva estática').locator('.calc-saved-value').textContent(), '630', 'estático não muda');
+    await waitText(page, () => row('Parcela da meta').textContent().then(norm), /Indisponível: .*Nenhum valor foi substituído por zero/);
+    eq(await row('Parcela da meta').locator('.calc-saved-value').textContent(), '—', 'sem resultado enganoso');
+    const after = await api(page, (repo) => JSON.stringify(repo.list('transactions').map((t) => ({ ...t, amount: t.id === 'exp' ? 210000 : t.amount, rev: 0, updatedAt: 0 }))));
+    eq(JSON.parse(after).length, JSON.parse(before).length, 'calculadora não criou nem alterou lançamentos');
+    eq(await api(page, (repo) => repo.list('calculations').length), 3, 'cálculos salvos no IndexedDB');
+    await noErrors(page);
+    await context.close();
+  });
+
+  await test('3.1 — Cenário 16: duas abas pagando a mesma ocorrência não duplicam (id estável + índice único)', async () => {
+    const { context, page } = await newPage();
+    await api(page, (repo) => repo.createRecurrence({ id: 'net', type: 'expense', description: 'Internet', amount: 10000, frequency: 'monthly', startDate: '2026-11-10' }));
+    const other = await context.newPage();
+    other.errors = [];
+    await other.goto(base); await other.waitForSelector('[data-kpi]');
+    const pay = (pg) => api(pg, async (repo) => {
+      const { virtualItems } = await import('./js/services/finance.js');
+      const v = virtualItems(repo.context(), '2026-11').find((x) => x.recurrenceId === 'net');
+      if (!v) return 'já pago';
+      try { await repo.payItem(v, { date: '2026-11-10', amount: 10000 }); return 'ok'; } catch (e) { return `recusado: ${e.message.slice(0, 40)}`; }
+    });
+    const [a, b] = await Promise.all([pay(page), pay(other)]);
+    await page.waitForTimeout(300);
+    const n = await api(page, async () => { const { loadAll } = await import('./js/database/db.js'); return (await loadAll()).transactions.length; });
+    eq(n, 1, `uma única ocorrência paga (${a} / ${b})`);
+    await noErrors(page);
+    await context.close();
+  });
+
+  await test('3.1 — Cenário 17: backup com recorrências, previsões, cálculos e layout restaura equivalente', async () => {
+    const a = await newPage();
+    await api(a.page, async (repo) => {
+      const r = await repo.createRecurrence({ id: 'psi', type: 'expense', description: 'Psicóloga', amount: 5000, frequency: 'monthly', mode: 'flex', perPeriod: 2, startDate: '2026-11-01' });
+      const v = (await import('./js/services/finance.js')).virtualItems(repo.context(), '2026-11').find((x) => x.recurrenceId === r.id);
+      await repo.payItem(v, { date: '2026-11-04', amount: 5000 });
+      await repo.createRecurrence({ id: 'fuel', type: 'expense', description: 'Combustível', amount: 40000, frequency: 'monthly', mode: 'forecast', startDate: '2026-11-01' });
+      await repo.saveTransaction({ id: 'f1', type: 'expense', status: 'done', amount: 10000, date: '2026-11-04', description: 'Posto', forecastId: 'fuel' });
+      await repo.saveCalculation({ id: 'c1', name: 'Reserva', expr: '@1 × 70%', mode: 'dynamic', refs: [{ id: 'r1', kind: 'projectedSurplus', month: 'current' }] });
+      await repo.setUiLayout({ version: 1, sections: { overview: { items: [{ type: 'commitments', size: 'l', chart: 'list' }], known: ['commitments'] } } });
+    });
+    await a.page.goto(`${base}#/configuracoes/dados`);
+    const dl = await exportBackupUI(a.page);
+    const file = join(ARTIFACTS, 'backup-v31.json');
+    await dl.saveAs(file);
+    const snapA = await api(a.page, (repo) => { const s = repo.snapshot(); s.meta = s.meta.filter((m) => m.key === 'ui.layout' || m.key === 'prefs'); return JSON.stringify(Object.fromEntries(Object.entries(s).map(([k, v]) => [k, v.map(({ rev, ...x }) => x).sort((p, q) => String(p.id || p.key).localeCompare(String(q.id || q.key)))]))); });
+    await a.context.close();
+    const b = await newPage();
+    await b.page.goto(`${base}#/configuracoes/dados`);
+    const [ch] = await Promise.all([b.page.waitForEvent('filechooser'), b.page.getByRole('button', { name: 'Restaurar backup' }).click()]);
+    await ch.setFiles(file);
+    await b.page.waitForSelector('.modal', { hasText: 'Restaurar backup (arquivo)?' });
+    await b.page.getByRole('button', { name: 'Restaurar', exact: true }).click();
+    await waitText(b.page, '.toast', /Backup restaurado/);
+    const snapB = await api(b.page, (repo) => { const s = repo.snapshot(); s.meta = s.meta.filter((m) => m.key === 'ui.layout' || m.key === 'prefs'); return JSON.stringify(Object.fromEntries(Object.entries(s).map(([k, v]) => [k, v.map(({ rev, ...x }) => x).sort((p, q) => String(p.id || p.key).localeCompare(String(q.id || q.key)))]))); });
+    eq(snapB, snapA, 'registros, recorrências, cálculos e preferências equivalentes');
+    const bk = JSON.parse(await readFile(file, 'utf8'));
+    eq(bk.version, 3, 'formato 3');
+    eq(bk.counts.calculations, 1, 'cálculos no backup');
+    await noErrors(b.page);
+    await b.context.close();
+  });
+
+  await test('3.1 — Cenário 18: migração de uma base da 3.0 (esquema v3) para v4 sem recriar o banco', async () => {
+    const context = await browser.newContext({ locale: 'pt-BR', timezoneId: 'America/Sao_Paulo' });
+    await context.clock.setFixedTime(NOW);
+    const page = await context.newPage();
+    page.errors = [];
+    page.on('pageerror', (e) => page.errors.push(e.message));
+    // Cria, sem o app, um banco no formato da 3.0 com dados representativos.
+    await page.goto(base.replace(/\/$/, '') + '/manifest.webmanifest');
+    await page.evaluate(() => new Promise((ok, fail) => {
+      const req = indexedDB.open('guia-financeiro.pessoal', 3);
+      req.onupgradeneeded = () => {
+        const db = req.result;
+        const tx = db.createObjectStore('transactions', { keyPath: 'id' });
+        for (const i of ['month', 'date', 'categoryId', 'blockId', 'sourceId', 'recurrenceId', 'planId']) tx.createIndex(i, i);
+        tx.createIndex('occurrence', ['recurrenceId', 'occurrenceDate'], { unique: true });
+        for (const s of ['categories', 'blocks', 'accounts', 'recurrences', 'installmentPlans', 'budgets', 'investments', 'investmentEvents', 'goals', 'snapshots']) db.createObjectStore(s, { keyPath: 'id' });
+        db.createObjectStore('meta', { keyPath: 'key' });
+        const t = req.transaction;
+        t.objectStore('recurrences').put({ id: 'net', type: 'expense', description: 'Internet', amount: 10000, frequency: 'monthly', interval: 1, startDate: '2026-10-10', anchorDay: 10, exceptions: { '2026-12-10': 'skipped' }, rev: 1 });
+        t.objectStore('transactions').put({ id: 'net:2026-10-10', type: 'expense', status: 'done', amount: 10000, date: '2026-10-10', month: '2026-10', description: 'Internet', recurrenceId: 'net', occurrenceDate: '2026-10-10', rev: 1, createdAt: 1, updatedAt: 1 });
+        t.objectStore('transactions').put({ id: 'm1', type: 'expense', status: 'done', amount: 2500, date: '2026-11-03', month: '2026-11', description: 'Padaria', rev: 1, createdAt: 1, updatedAt: 1 });
+        t.objectStore('meta').put({ key: 'seeded', value: true });
+        t.objectStore('meta').put({ key: 'ui.layout', value: { version: 1, sections: { overview: { items: [{ type: 'insights', hidden: true }], known: ['insights'] } } } });
+      };
+      req.onsuccess = () => { req.result.close(); ok(); };
+      req.onerror = () => fail(req.error);
+    }));
+    await page.goto(base);
+    await page.waitForSelector('[data-kpi]');
+    const info = await page.evaluate(() => new Promise((ok) => {
+      const req = indexedDB.open('guia-financeiro.pessoal');
+      req.onsuccess = () => {
+        const db = req.result;
+        const tx = db.transaction(['transactions'], 'readonly');
+        const r = tx.objectStore('transactions').getAll();
+        r.onsuccess = () => { ok({ v: db.version, stores: [...db.objectStoreNames].sort(), idx: [...tx.objectStore('transactions').indexNames].sort(), tx: r.result.map((x) => x.id).sort() }); db.close(); };
+      };
+    }));
+    eq(info.v, 4, 'versão 4');
+    assert(info.stores.includes('calculations') && info.stores.includes('snapshots'), `stores: ${info.stores}`);
+    assert(info.idx.includes('occurrenceKey') && info.idx.includes('occurrence'), 'índices antigos e novos');
+    eq(JSON.stringify(info.tx), JSON.stringify(['m1', 'net:2026-10-10']), 'dados preservados');
+    const s = await sumOf(page, '2026-11');
+    eq(s.total, 12500, 'recorrência antiga projeta normalmente (novembro)');
+    eq((await sumOf(page, '2026-12')).total, 0, 'exceção antiga (ignorada) respeitada');
+    eq(await page.locator('.widget[data-id="insights"]').count(), 0, 'personalização da 3.0 preservada');
+    eq(page.errors.length, 0, page.errors.join(' | '));
+    await context.close();
+  });
+
+  for (const tz of ['Pacific/Kiritimati', 'America/Los_Angeles', 'Asia/Tokyo', 'America/New_York', 'UTC']) {
+    await test(`3.1 — Cenário 19: datas financeiras estáveis no fuso ${tz} (perto da meia-noite)`, async () => {
+      const context = await browser.newContext({ viewport: { width: 1360, height: 900 }, locale: 'pt-BR', timezoneId: tz });
+      // 30/11/2026 às 23:50 no fuso local: o "hoje" financeiro tem de ser 30/11, não 01/12.
+      await context.clock.setFixedTime(new Date(utcForLocal(tz, 2026, 11, 30, 23, 50)));
+      const page = await context.newPage();
+      page.errors = [];
+      page.on('pageerror', (e) => page.errors.push(e.message));
+      await page.goto(base); await page.waitForSelector('[data-kpi]');
+      eq(await page.evaluate(async () => (await import('./js/utils/dates.js')).today()), '2026-11-30', 'hoje local');
+      const m = await openForm(page);
+      eq(await m.locator('input[name=date]').inputValue(), '2026-11-30', 'data padrão do formulário');
+      await m.locator('input[name=amount]').fill('10');
+      await m.locator('input[name=description]').fill('Lanche');
+      await save(m);
+      await api(page, (repo) => repo.createRecurrence({ id: 'w', type: 'expense', description: 'Semanal', amount: 100, frequency: 'weekly', startDate: '2026-10-25' }));
+      const r = await api(page, async (repo) => {
+        const { ruleOccurrences } = await import('./js/services/recurrence.js');
+        return { tx: repo.list('transactions').map((t) => [t.date, t.month]), occ: ruleOccurrences(repo.get('recurrences', 'w'), '2026-10-25', '2026-11-15').map((o) => o.date) };
+      });
+      eq(JSON.stringify(r.tx), JSON.stringify([['2026-11-30', '2026-11']]), 'data e competência preservadas');
+      eq(JSON.stringify(r.occ), JSON.stringify(['2026-10-25', '2026-11-01', '2026-11-08', '2026-11-15']), 'semanas na virada do horário de verão');
+      await page.goto(`${base}#/planejamento/calendario`);
+      await page.waitForSelector('.cal-day[data-date="2026-11-30"].is-today');
+      eq(page.errors.length, 0, page.errors.join(' | '));
+      await context.close();
+    });
+  }
+
+  await test('3.1 — Cenário 20: celular (emulação) — formulário, compromissos, personalização e calculadora acessíveis', async () => {
+    const { context, page } = await newPage({ ...devices['iPhone 13'] });
+    await api(page, (repo) => repo.createRecurrence({ type: 'expense', description: 'Psicóloga', amount: 5000, frequency: 'monthly', mode: 'flex', perPeriod: 2, startDate: '2026-11-01' }));
+    await page.goto(`${base}#/planejamento/compromissos`);
+    await page.waitForSelector('.commit');
+    const inView = async (sel) => page.locator(sel).first().evaluate((e) => { const r = e.getBoundingClientRect(); return r.left >= 0 && r.right <= window.innerWidth + 1 && r.width > 0; });
+    assert(await inView('.commit .occ-check'), 'botão de pagar visível');
+    await page.evaluate(() => { location.hash = '#/visao-geral'; });
+    await page.waitForSelector('[data-kpi]');
+    await page.getByRole('button', { name: 'Personalizar' }).click();
+    assert(await inView('.widget .widget-handle'), 'alça de mover');
+    assert(await inView('.widget .widget-settings'), 'ajustes do componente');
+    await page.locator('.edit-bar').getByRole('button', { name: 'Concluir' }).click();
+    await page.evaluate(async () => (await import('./js/components/calculator.js')).openCalculator());
+    await page.waitForSelector('.calc.is-open');
+    const box = await page.locator('.calc').boundingBox();
+    const vp = page.viewportSize();
+    assert(box.y >= 0 && box.y + Math.min(box.height, vp.height) <= vp.height + 1 && box.x >= 0 && box.x + box.width <= vp.width + 1, `calculadora dentro da tela: ${JSON.stringify(box)}`);
+    await page.locator('.calc').getByRole('button', { name: 'Fechar calculadora' }).click();
+    await page.locator('.tabbar .tab-add').click();
+    const m = page.locator('.entry-modal');
+    await m.waitFor();
+    await m.locator('select[name=repeat]').selectOption('monthly');
+    assert(await inView('.entry-modal .mode-opt[data-mode="flex"]'), 'opções de repetição legíveis');
+    assert(await inView('.entry-modal .modal-foot button[type=submit]'), 'botão salvar visível');
+    for (const r of ['visao-geral', 'lancamentos', 'planejamento/compromissos', 'planejamento/calendario', 'investimentos', 'configuracoes']) {
+      await page.keyboard.press('Escape');
+      await page.goto(`${base}#/${r}`); await page.waitForSelector('.page-head');
+      const over = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+      assert(over <= 1, `rolagem horizontal em ${r}: ${over}px`);
+    }
+    await noErrors(page);
+    await context.close();
+  });
+
+  await test('3.1 — Cenário 22: assinatura institucional fixa, com a versão central, em todos os modos', async () => {
+    const { context, page } = await newPage();
+    const version = await page.evaluate(async () => (await import('./js/version.js')).APP_VERSION);
+    eq(version, '3.1.0', 'versão');
+    await waitText(page, '.sidebar .signature', `Desenvolvido por Filipe Santana FS v${version}`);
+    assert(await page.locator('.sidebar .signature .sig-by').isVisible(), 'visível no desktop');
+    await page.getByRole('button', { name: 'Personalizar' }).click();
+    assert(await page.locator('.sidebar .signature').isVisible(), 'personalização não remove');
+    await page.locator('.edit-bar').getByRole('button', { name: 'Concluir' }).click();
+    await page.goto(`${base}#/configuracoes`);
+    await page.locator('#cfg-personalizacao').getByRole('button', { name: 'Restaurar toda a aparência' }).click();
+    await page.locator('.modal').getByRole('button', { name: 'Restaurar aparência' }).click();
+    assert(await page.locator('.sidebar .signature .sig-by').isVisible(), 'restaurar aparência não remove');
+    await waitText(page, () => page.locator('#cfg-sobre').textContent().then(norm), new RegExp(`Versão ${version.replace(/\./g, '\\.')}.*Desenvolvido por Filipe Santana`));
+    await page.keyboard.press('[');
+    assert(await page.locator('.sidebar .signature .sig-mono').isVisible(), 'menu recolhido mostra a marca discreta');
+    await page.keyboard.press('[');
+    const diag = await page.locator('#cfg-armazenamento').textContent();
+    assert(diag.includes(version), 'diagnóstico usa a mesma versão');
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto(`${base}#/visao-geral`); await page.waitForSelector('[data-kpi]');
+    assert(await page.locator('.signature-main').isVisible(), 'assinatura no celular');
+    await noErrors(page);
+    await context.close();
+  });
+
+  await test('3.1 — Cenário 23: README apresenta o produto, com o link do app e sem tutorial de publicação', async () => {
+    const readme = await readFile(join(ROOT, 'README.md'), 'utf8');
+    assert(readme.includes('https://filipeesantana.github.io/Fluxo/'), 'link do aplicativo');
+    for (const s of ['## O que é o Fluxo?', '## Como começar', '## Recorrências e planejamento', '## Privacidade e armazenamento', '## Backup e recuperação', 'Desenvolvido por **Filipe Santana**']) assert(readme.includes(s), `seção: ${s}`);
+    for (const bad of [/git clone/i, /\bcommit/i, /Settings → Pages/i, /npm (run|test)/i, /branch/i]) assert(!bad.test(readme), `README não deveria ensinar publicação (${bad})`);
+    const dev = await readFile(join(ROOT, 'docs', 'DEVELOPMENT.md'), 'utf8');
+    assert(dev.includes('npm test'), 'informação técnica foi para docs/DEVELOPMENT.md');
   });
 
   await browser.close();

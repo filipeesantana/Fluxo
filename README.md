@@ -7,118 +7,109 @@
 
 # Fluxo
 
-Organizador financeiro pessoal que roda inteiro no navegador. Sem conta, sem servidor e sem telemetria: os dados ficam no seu dispositivo.
+Uma ferramenta gratuita para organizar a vida financeira pessoal: o que entra, o que sai, o que ainda vai vencer e quanto sobra no mês. Funciona direto no navegador, sem cadastro.
 
 ## Acesse o Fluxo
 
-**https://filipeesantana.github.io/fluxo/**
+**[filipeesantana.github.io/Fluxo](https://filipeesantana.github.io/Fluxo/)**
 
-> Enquanto o repositório não for renomeado para `fluxo`, o endereço em uso é https://filipeesantana.github.io/guia-financeiro/. Veja [Execução local e publicação](#execução-local-e-publicação) antes de trocar de endereço: os dados do navegador ficam ligados ao endereço onde foram criados.
+Basta abrir o link. Não é preciso instalar nada nem criar conta.
 
 ## O que é o Fluxo?
 
-O Fluxo junta, num só lugar, o que entrou, o que saiu, o que ainda vai vencer e quanto sobra no mês. Ele responde perguntas práticas — quanto ainda vou gastar, quanto posso investir, quando uma meta fica pronta — com números que você consegue conferir: cada indicador abre a conta que levou até ele.
+O Fluxo ajuda a responder perguntas do dia a dia com números que você consegue conferir: quanto ainda vou gastar este mês, quanto já paguei das contas, quanto sobra para guardar, quando uma meta fica pronta.
+
+Você registra receitas e despesas, organiza tudo por categoria, bloco (pessoal, casa, moto…) e fonte de pagamento, e o Fluxo monta o resumo do mês, o calendário de vencimentos e a projeção dos próximos meses. Cada número da visão geral pode ser aberto para mostrar de onde veio.
 
 Ele não movimenta dinheiro, não se conecta a bancos e não envia seus dados para lugar nenhum.
 
-## Principais funcionalidades
+## Como começar
 
-- **Visão geral** com sobra projetada, disponível para investir, receitas e despesas realizadas e previstas. Clique em qualquer indicador para ver a composição do valor e os lançamentos de cada parte.
-- **Lançamentos** com busca, filtros, agrupamento, visualização em lista ou tabela e colunas organizáveis.
-- **Repetição de lançamentos** (semanal, quinzenal, mensal, bimestral, trimestral, semestral, anual ou personalizada), com início, término, quantidade e dia de vencimento. Alterações em séries perguntam se valem só para uma ocorrência, para as próximas ou para a série inteira.
-- **Cartões de crédito** com fechamento, vencimento e faturas calculadas, sem contar a compra duas vezes quando a fatura é paga.
-- **Planejamento**: calendário financeiro, projeção de até 60 meses, simulações que não alteram seus registros, recorrências, parcelamentos e orçamentos.
-- **Investimentos e metas**, com rentabilidade opcional e simulador de aportes.
-- **Personalização**: reorganize, redimensione, oculte e destaque componentes; escolha a visualização dos gráficos; ajuste a densidade da interface.
-- **Backup completo** em JSON com verificação de integridade, opção de proteção por senha e restauração com prévia.
-- **Tema claro e escuro**, atalhos de teclado e calculadora integrada.
+1. Acesse o Fluxo pelo navegador.
+2. Registre suas receitas e despesas com **Novo lançamento** (atalho `N`). Valor, descrição e data bastam para começar.
+3. Organize os lançamentos por categoria, bloco e fonte. Isso deixa os gráficos e resumos mais úteis.
+4. Configure as despesas recorrentes usando **Repetir** no próprio formulário.
+5. Acompanhe o resumo mensal na **Visão geral**.
+6. Planeje os próximos meses em **Planejamento**: compromissos, calendário e projeção.
+7. Personalize as telas do seu jeito em **Personalizar**.
+8. Faça backups regularmente em **Configurações → Dados e backup**.
 
-## Como utilizar
+## O que você pode fazer
 
-1. Abra o Fluxo e cadastre suas contas e cartões em **Configurações → Contas e cartões** (para cartões, informe fechamento e vencimento).
-2. Registre um lançamento com **Novo lançamento** (atalho `N`). Valor, descrição e data bastam; categoria, bloco e fonte ajudam nas análises.
-3. Para contas que se repetem, escolha uma opção em **Repetir lançamento** no próprio formulário.
-4. Marque como pago ou recebido pelo círculo à esquerda de cada lançamento previsto.
-5. Na **Visão geral**, clique em um indicador para entender como ele foi calculado.
-6. Use **Planejamento** para ver o calendário do mês, a projeção dos próximos meses e simular decisões.
-7. Em **Investimentos**, crie metas e use o simulador; nada é registrado sem sua confirmação.
-8. Use **Personalizar** para organizar as telas do seu jeito. Só a aparência muda.
-9. Gere um backup em **Configurações → Dados e backup** e guarde o arquivo fora do navegador.
+- **Ver o mês com clareza.** Sobra projetada, disponível para investir, receitas e despesas realizadas e previstas. Clique em qualquer indicador para ver a conta que levou até ele.
+- **Registrar rápido.** O formulário sugere categoria e fonte pelo histórico e avisa quando um lançamento parece repetido, sem impedir lançamentos legítimos.
+- **Acompanhar cartões.** Com fechamento e vencimento cadastrados, as compras caem na fatura certa e o pagamento da fatura não conta a despesa duas vezes.
+- **Planejar.** Calendário de vencimentos, projeção de até cinco anos e simulações de decisões ("e se eu cancelar esta assinatura?") que não alteram seus registros.
+- **Acompanhar compromissos.** Uma lista mensal das contas, para marcar o que já foi pago, uma a uma.
+- **Ser avisado com discrição.** Orçamentos perto do limite, contas atrasadas e vencimentos próximos aparecem num quadro de "Atenção", sem alertas piscando.
+- **Calcular com seus dados.** A calculadora faz contas comuns e porcentagens fáceis, e pode usar valores reais do Fluxo.
+- **Guardar backups completos**, com verificação de integridade e proteção opcional por senha.
 
-## Como funciona
+## Recorrências e planejamento
 
-Todos os números vêm de um único motor de cálculo (`js/services/finance.js`), usado pela visão geral, pelo calendário, pela projeção e pelos detalhamentos. Por isso os valores conferem entre telas.
+Quase tudo pode se repetir, independentemente de como você paga: Pix, dinheiro, débito, cartão de crédito, vale-alimentação ou outra fonte. A fonte pode até ficar para depois: escolha no momento de pagar.
 
-- Valores são guardados em **centavos inteiros**; datas, como `AAAA-MM-DD` no calendário local.
-- Compras no cartão entram na competência da fatura e são compromissos até o pagamento. Pagamento de fatura, transferências e aportes não são despesas de consumo.
-- Benefícios de uso restrito (VA/VR) não entram no valor disponível para investir.
-- Ocorrências de recorrências são projetadas, não gravadas uma a uma. Quando uma ocorrência é paga ou editada, ela ganha um identificador fixo (`regra:data`), o que impede duplicidades.
-- A rentabilidade é opcional (0% por padrão). Quando informada, os juros são compostos com a taxa mensal equivalente `(1 + a)^(1/12) − 1`.
+Ao escolher **Repetir → Mensalmente**, o Fluxo oferece quatro jeitos:
+
+- **Em um dia específico.** Internet de R$ 100 todo dia 10.
+- **Em mais de um dia do mês.** R$ 50 nos dias 5 e 20 (R$ 100 no mês).
+- **Com datas flexíveis.** Duas consultas de R$ 50 por mês, com datas a combinar. O mês já conta R$ 100 no planejamento, e você define cada data quando souber, sem o Fluxo inventar datas.
+- **Como previsão mensal.** Até R$ 400 de combustível. Cada abastecimento registrado consome a previsão: depois de R$ 300 gastos, restam R$ 100. Se passar do previsto, o excedente aparece. Se sobrar, você encerra o mês e a sobra não vira despesa.
+
+Também há **A cada 14 dias**, com intervalos reais: começando em 04/11, as ocorrências caem em 04/11, 18/11, 02/12, 16/12 e 30/12. Por isso, dezembro pode ter três ocorrências.
+
+Em **Planejamento → Compromissos**, cada mês tem sua própria lista, com o progresso ("1 de 2 consultas pagas · R$ 50 restantes"). Pagar em novembro não marca dezembro. Ao pagar, você pode confirmar a data, o valor e a fonte, registrar um pagamento parcial e desfazer, se precisar.
+
+Lançamentos avulsos também podem ser **copiados ou replicados** para outros meses, ou **transformados em recorrentes** sem criar cópias.
+
+## Investimentos e metas
+
+Cadastre reservas e aplicações com o saldo atual e crie metas informando quanto quer juntar e quanto consegue guardar por mês. O simulador mostra quando a meta fica pronta e pode usar a sobra do mês como referência.
+
+A rentabilidade é opcional e sempre tratada como estimativa: projeções não são retorno garantido.
+
+## Personalização
+
+Em **Personalizar**, arraste os componentes pela alça (ou use as setas do teclado), escolha o tamanho, a cor de destaque e o formato de cada informação: valor simples, valor com composição, evolução mensal, comparação com o mês anterior, barras, rosca, tabela e outros, conforme o que fizer sentido para cada dado.
+
+O encaixe automático aproveita os espaços livres sem embaralhar a ordem escolhida, e **Organizar automaticamente** ajusta as larguras para fechar lacunas. Tudo pode ser desfeito. No celular, a organização é guardada à parte, sem mexer na do computador.
+
+Também dá para escolher a densidade da interface (compacta, padrão ou confortável), o tema claro ou escuro e reduzir as animações.
 
 ## Privacidade e armazenamento
 
-Os dados ficam no **IndexedDB** do navegador, no banco `guia-financeiro.pessoal`. Não existe servidor, conta, sincronização, rastreamento ou analytics, e o app não faz requisições para outros domínios.
+O Fluxo é **local-first**:
 
-O que isso significa na prática:
+- não é necessário criar conta;
+- os registros ficam guardados no próprio navegador, no **IndexedDB**, neste dispositivo;
+- os dados **não são sincronizados** com outros aparelhos;
+- limpar os dados do site, usar navegação privada ou trocar de navegador pode **apagar os registros**;
+- por isso, **backups externos são fundamentais**;
+- o armazenamento local **não é criptografia**: quem tiver acesso ao seu perfil do navegador consegue ler os dados;
+- a segurança depende também do seu dispositivo, do navegador e da integridade do código publicado.
 
-- o IndexedDB **não é criptografado**: quem tiver acesso a este perfil do navegador consegue ler os dados;
-- limpar os dados do site, usar navegação privada ou trocar de navegador ou aparelho pode fazer os dados desaparecerem;
-- os dados ficam ligados à **origem** (`https://filipeesantana.github.io`). Outros apps publicados na mesma origem compartilham o mesmo espaço do navegador; o nome exclusivo do banco evita colisões, mas não é uma barreira de segurança;
-- o Fluxo pede ao navegador armazenamento persistente, mas a concessão depende do navegador.
-
-Mais detalhes em [SECURITY.md](SECURITY.md).
+O Fluxo não usa rastreamento, anúncios nem telemetria. Mais detalhes em [SECURITY.md](SECURITY.md).
 
 ## Backup e recuperação
 
-Em **Configurações → Dados e backup**:
+Para guardar uma cópia:
 
-- **Exportar backup completo**: arquivo `Fluxo-backup-AAAA-MM-DD_HH-MM.json` com todos os registros, preferências e personalização, contagens e uma soma **SHA-256** que detecta arquivos corrompidos ou alterados. A soma não é uma assinatura: ela não prova quem gerou o arquivo.
-- **Protegido por senha** (opcional): o conteúdo é cifrado com AES-256-GCM e chave derivada por PBKDF2 (600 mil iterações). Sem a senha, não há como recuperar o arquivo.
-- **Restaurar backup**: o arquivo é validado por inteiro (estrutura, versão, tipos, relacionamentos, checksum) e uma prévia mostra data, versão, quantidades e o que será substituído. A troca acontece em uma única transação; se algo falhar, nada muda. Antes da troca, o Fluxo oferece baixar um backup dos dados atuais e guarda um snapshot interno (que não substitui um backup externo).
-- **Lembrete** configurável (desligado, 7 dias, 15 dias ou mensal) e data do último backup gerado.
-- Backups do Guia Financeiro 1.0 e do Fluxo 2.0 continuam aceitos. Arquivos de uma versão futura desconhecida são recusados.
+1. Abra **Configurações → Dados e backup**.
+2. Clique em **Exportar backup completo** e escolha entre arquivo comum ou protegido por senha.
+3. Guarde o arquivo num lugar seguro, fora do navegador.
 
-O formato está documentado em [SECURITY.md](SECURITY.md#formato-do-backup). Backups contêm dados pessoais: não os publique nem os adicione a repositórios.
+Para recuperar:
 
-## Tecnologias utilizadas
+1. Em **Configurações → Dados e backup**, clique em **Restaurar backup** e escolha o arquivo.
+2. Confira a prévia: data, quantidades e o que será substituído.
+3. Confirme. Se algo der errado no meio do caminho, seus dados atuais continuam intactos.
 
-- HTML, CSS e JavaScript (ES Modules), sem framework e sem etapa de build;
-- IndexedDB para armazenamento local;
-- Web Crypto (SHA-256, AES-GCM, PBKDF2), BroadcastChannel e Web Locks, todos nativos do navegador;
-- gráficos em SVG desenhados pelo próprio app;
-- testes com `node:test` e Playwright (Chromium).
+O backup inclui lançamentos, recorrências, compromissos, cálculos salvos e a personalização. Se você usar senha e esquecê-la, não há como recuperar o arquivo.
 
-Não há dependências de execução: nenhum script, fonte ou recurso é carregado de terceiros.
+## Sobre o projeto
 
-## Execução local e publicação
+O Fluxo é feito com HTML, CSS e JavaScript, sem frameworks e sem dependências externas, e é publicado como site estático. A ideia é simples: poucos campos para registrar, cálculos transparentes e nenhuma surpresa com os seus dados.
 
-O Fluxo é um site estático. Para rodar localmente, sirva a pasta do projeto com qualquer servidor HTTP estático (módulos ES não funcionam abrindo o `index.html` direto do disco). O projeto inclui um servidor simples que reproduz o subdiretório do GitHub Pages:
+Desenvolvido por **Filipe Santana**.
 
-```bash
-node tests/server.mjs
-```
-
-A publicação usa o GitHub Pages a partir da raiz da branch `main`. Todos os caminhos são relativos e a navegação usa `#/rotas`, então o app funciona em qualquer subdiretório (`/guia-financeiro/`, `/fluxo/` ou outro).
-
-**Mudança de endereço.** O navegador separa os dados por origem (`https://filipeesantana.github.io`), não pelo caminho. Renomear o repositório de `guia-financeiro` para `fluxo` mantém a mesma origem, e o nome do banco não depende do caminho, então os dados continuam acessíveis no novo endereço do mesmo navegador. Mesmo assim:
-
-1. gere um **backup completo** antes de renomear;
-2. depois de renomear, confira se o novo endereço foi publicado em *Settings → Pages*;
-3. não conte com o endereço antigo redirecionando: o GitHub redireciona o repositório, mas o redirecionamento do site publicado não é garantido.
-
-## Testes e manutenção
-
-| Suíte | Comando | O que cobre |
-|---|---|---|
-| Unitários | `npm test` | regras financeiras, datas, faturas, recorrências, backup, criptografia, validação |
-| Navegador | `npm run test:e2e` | fluxos completos no Chromium, servido em `/guia-financeiro/` e em `/fluxo/` |
-| Escala | `npm run test:perf` | 100, 1.000, 10.000 e 50.000 lançamentos sintéticos |
-
-Os testes de navegador e de escala usam o Playwright com Chromium. Medições mais recentes e achados de auditoria estão em [AUDIT-v3.0.md](AUDIT-v3.0.md); o histórico de mudanças, em [CHANGELOG.md](CHANGELOG.md).
-
-Limitações conhecidas:
-
-- não há sincronização entre aparelhos; use backup e restauração;
-- não há service worker: o app funciona sem rede com a aba aberta, mas não é instalável para uso offline completo;
-- projeções consideram o que foi cadastrado; gastos variáveis futuros só entram quando você informa uma estimativa mensal;
-- a compatibilidade foi verificada no Chromium. Firefox e Safari devem funcionar por usarem apenas APIs padrão, mas não foram testados automaticamente nesta versão.
+Informações técnicas para manutenção estão em [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md). O histórico de versões está em [CHANGELOG.md](CHANGELOG.md).

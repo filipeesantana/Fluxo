@@ -4,14 +4,15 @@ import { toast, toastError } from './toast.js';
 import { field, moneyInput, segmented, suggestInput, checkbox, readInt } from './fields.js';
 import { picker } from './picker.js';
 import * as repo from '../database/repository.js';
-import { today, monthOf, isISODate, isMonth, formatMonth, formatDate, formatDateShort, dateInMonth, parseISO, addMonths, addDays } from '../utils/dates.js';
+import { today, monthOf, isISODate, isMonth, formatMonth, formatDate, formatDateShort, dateInMonth, parseISO, addMonths, addDays, firstDay } from '../utils/dates.js';
 import { formatMoney, splitCents } from '../utils/money.js';
 import { isCard, billFor, cardConfigured, competenceOf } from '../services/cards.js';
 import { descriptionSuggestions, recentSources, fold } from '../services/suggest.js';
 import { summarize } from '../services/finance.js';
 import { findSimilar } from '../services/integrity.js';
 import { METHODS } from '../services/validation.js';
-import { REPEAT_PRESETS, describeFrequency } from '../services/recurrence.js';
+import { ruleMode, monthlyAmount } from '../services/recurrence.js';
+import { repeatFields } from './repeat-fields.js';
 import { categoryOptions, blockOptions, accountOptions, createCategory, createBlock, categoryName, blockName, accountName, recentIds, colorOf } from '../views/common.js';
 import { ui } from '../state.js';
 import { askScope } from '../views/actions.js';
@@ -31,7 +32,7 @@ async function quickAccount(name, kind = 'checking') {
 
 /**
  * Formulário de lançamento.
- * opts.tx: movimentação existente · opts.occurrence: { ruleId, date } · opts.defaults · opts.refundOf
+ * opts.tx: movimentação existente · opts.occurrence: { ruleId, key, date } · opts.defaults · opts.refundOf
  */
 export function openEntryForm(opts = {}) {
   const existing = opts.tx || null;
@@ -60,7 +61,11 @@ export function openEntryForm(opts = {}) {
     onChange: (v) => { type = v; dirty = true; syncType(); },
   });
   const amount = moneyInput({ value: base.amount ?? null, large: true, name: 'amount', onChange: () => { dirty = true; updatePreview(); hideSimilar(); } });
-  const date = h('input', { class: 'input', type: 'date', value: base.date, required: true, name: 'date' });
+  const date = h('input', { class: 'input', type: 'date', value: base.date || '', required: true, name: 'date' });
+  // Data a definir: só para compromissos previstos (consulta em dezembro, dia ainda não marcado).
+  const tbd = h('input', { type: 'checkbox', name: 'dateTBD', checked: !base.date && base.status !== 'done' });
+  const tbdMonth = h('input', { class: 'input input-sm', type: 'month', name: 'tbdMonth', value: base.period || base.month || ui.month, 'aria-label': 'Mês previsto' });
+  const tbdRow = h('div', { class: 'tbd-row' }, h('label', { class: 'check check-sm' }, tbd, h('span', null, 'Data a definir')), tbdMonth);
   const desc = suggestInput({
     value: base.description || '', placeholder: 'Ex.: Mercado, Internet, Salário', name: 'description',
     getSuggestions: (q) => (isEdit || type === 'transfer' ? [] : descriptionSuggestions(q, repo.list('transactions'), { type: type === 'income' ? 'income' : 'expense' })),
@@ -91,7 +96,7 @@ export function openEntryForm(opts = {}) {
   const status = segmented({
     label: 'Situação', value: base.status,
     options: [{ value: 'done', label: 'Realizado' }, { value: 'planned', label: 'Previsto' }],
-    onChange: () => { statusTouched = true; dirty = true; },
+    onChange: () => { statusTouched = true; dirty = true; if (typeof syncExtras === 'function') syncExtras(); },
   });
   const restricted = checkbox('Benefício de uso restrito', { checked: Boolean(base.restricted), hint: 'VA/VR não conta como dinheiro livre' });
   const method = h('select', { class: 'select', name: 'method' }, h('option', { value: '' }, 'Não informado'), ...Object.entries(METHODS).map(([v, l]) => h('option', { value: v }, l)));
@@ -105,22 +110,18 @@ export function openEntryForm(opts = {}) {
   const parcelCount = h('input', { class: 'input', type: 'number', min: 2, max: 120, step: 1, value: 2, inputmode: 'numeric' });
   const parcelFirst = h('input', { class: 'input', type: 'month', value: monthOf(base.date) });
   const parcelPreview = h('div', { class: 'faint small' });
-  // Repetição: um único seletor visível; parâmetros extras são opcionais.
-  const repeatSel = h('select', { class: 'select', name: 'repeat', 'aria-label': 'Repetir lançamento' }, ...Object.entries(REPEAT_PRESETS).map(([v, p]) => h('option', { value: v }, p.label)));
-  repeatSel.value = opts.defaults?.repeat || 'none';
-  const customN = h('input', { class: 'input', type: 'number', min: 1, max: 60, step: 1, value: 1, inputmode: 'numeric', 'aria-label': 'Intervalo' });
-  const customUnit = h('select', { class: 'select', 'aria-label': 'Unidade' }, h('option', { value: 'weekly' }, 'semana(s)'), h('option', { value: 'monthly' }, 'mês(es)'), h('option', { value: 'yearly' }, 'ano(s)'));
-  customUnit.value = 'monthly';
-  const repeatEnd = h('input', { class: 'input', type: 'date', name: 'repeatEnd' });
-  const repeatCount = h('input', { class: 'input', type: 'number', min: 1, max: 600, step: 1, placeholder: 'Sem limite', inputmode: 'numeric', name: 'repeatCount' });
-  const repeatDay = h('input', { class: 'input', type: 'number', min: 1, max: 31, step: 1, placeholder: 'Dia da data', inputmode: 'numeric', name: 'repeatDay' });
-  const repeatSummary = h('p', { class: 'faint small' });
-  const mode = { parcel: false, repeat: repeatSel.value !== 'none', details: Boolean(base.note || base.method) };
+  // Repetição: um único seletor visível; o restante aparece só quando necessário.
+  const rep = repeatFields({ preset: opts.defaults?.repeat || 'none', mode: opts.defaults?.repeatMode || 'fixed', getDate: () => date.value, getAmount: () => amount.getValue(), getType: () => type, onChange: () => { mode.repeat = rep.active; if (mode.repeat) mode.parcel = false; syncExtras(); } });
+  const repeatSel = rep.select;
+  // Previsões mensais ativas às quais um gasto pode ser vinculado (consome o valor previsto).
+  const forecastSel = h('select', { class: 'select', name: 'forecast', 'aria-label': 'Conta na previsão mensal' });
+  let forecastTouched = Boolean(base.forecastId);
+  const mode = { parcel: false, repeat: rep.active, details: Boolean(base.note || base.method) };
   const chip = (key, label, ic) => {
     const b = h('button', { class: 'chip-toggle', type: 'button', 'aria-pressed': String(mode[key]), dataset: { toggle: key } }, icon(ic), label);
     b.addEventListener('click', () => {
       mode[key] = !mode[key];
-      if (key === 'parcel' && mode.parcel) { mode.repeat = false; repeatSel.value = 'none'; }
+      if (key === 'parcel' && mode.parcel) { mode.repeat = false; rep.set('none'); }
       syncExtras();
     });
     return b;
@@ -130,10 +131,12 @@ export function openEntryForm(opts = {}) {
 
   const fAmount = field(isRefund ? 'Valor devolvido' : 'Valor', amount, { className: 'f-amount' });
   const fDate = field('Data', date, { className: 'f-date' });
+  fDate.append(tbdRow);
   const fDesc = field('Descrição', desc);
   const fCategory = field('Categoria', category);
   const fBlock = field(h('span', null, 'Bloco ', h('span', { class: 'opt' }, 'opcional')), block, { id: block.button.id });
   const fSource = field('Pago com', source, { id: source.button.id });
+  const fForecast = field('Conta na previsão', forecastSel, { hint: 'O gasto consome o valor previsto para o mês' });
   const fTo = field('Para', toAcc, { id: toAcc.button.id });
   const fBill = field('Fatura (competência)', billMonth, { hint: 'Mês da fatura que este pagamento liquida' });
   const fStatus = field('Situação', status);
@@ -144,24 +147,15 @@ export function openEntryForm(opts = {}) {
   fBill.append(billUse);
 
   const parcelBox = h('div', { class: 'extra-box', hidden: true }, h('div', { class: 'form-grid' }, field('Parcelas', parcelCount), field('Primeira competência', parcelFirst)), parcelPreview);
-  const fRepeat = field('Repetir lançamento', repeatSel);
-  const customRow = h('div', { class: 'form-grid', hidden: true }, field('A cada', customN), field('Unidade', customUnit));
-  const repeatBox = h('details', { class: 'advanced repeat-options', hidden: true },
-    h('summary', null, icon('chev-right', 'icon-sm'), 'Opções da repetição', h('span', { class: 'opt' }, ' · opcionais')),
-    h('div', { class: 'advanced-body' }, customRow,
-      h('div', { class: 'form-grid' },
-        field(h('span', null, 'Termina em ', h('span', { class: 'opt' }, 'inclusive')), repeatEnd),
-        field('Quantidade de repetições', repeatCount),
-        field('Dia de vencimento', repeatDay, { hint: 'Mensal: dia fixo do mês' })),
-      repeatSummary),
-    h('p', { class: 'faint small' }, 'As próximas ocorrências serão projetadas como previstas e aparecem no calendário.'));
+  const fRepeat = field('Repetir', repeatSel);
+  const repeatBox = rep.box;
   const detailsBox = h('div', { class: 'extra-box', hidden: true }, h('div', { class: 'form-grid' }, fMethod, fNote));
   const toggles = h('div', { class: 'more-toggles' }, isEdit ? null : parcelChip, detailsChip);
 
   const similarBox = h('div', { class: 'banner banner-warn', hidden: true, role: 'status' });
   const banners = [];
   if (refundOf) banners.push(h('div', { class: 'banner' }, icon('refund', 'icon-sm'), h('span', null, 'Reduz a despesa original: ', h('strong', null, refundOf.description), ` (${formatMoney(refundOf.amount)})`)));
-  if (occ) banners.push(h('div', { class: 'banner' }, icon('repeat', 'icon-sm'), h('span', null, `Ocorrência de ${formatDate(occ.date)}. As alterações valem só para esta data.`)));
+  if (occ) banners.push(h('div', { class: 'banner' }, icon('repeat', 'icon-sm'), h('span', null, occ.date ? `Ocorrência de ${formatDate(occ.date)} de uma série.` : 'Ocorrência de uma série com data a definir.', ' Ao salvar, você escolhe se a alteração vale só para ela ou também para as próximas.')));
   if (existing?.planId) banners.push(h('div', { class: 'banner' }, icon('layers', 'icon-sm'), h('span', null, `Parcela ${existing.installment.index} de ${existing.installment.count}. Alterações aqui valem só para esta parcela.`)));
 
   const form = h('form', { class: 'entry-form', novalidate: true, id: 'entry-form' },
@@ -169,7 +163,7 @@ export function openEntryForm(opts = {}) {
     isRefund ? null : h('div', { class: 'form-row' }, typeSeg),
     h('div', { class: 'form-grid form-grid-amount' }, fAmount, fDate),
     fDesc,
-    h('div', { class: 'form-grid' }, fCategory, fSource, fTo, fBlock, fStatus, isEdit ? null : fRepeat, fBill, h('div', { class: 'field f-restricted' }, restricted)),
+    h('div', { class: 'form-grid' }, fCategory, fSource, fTo, fBlock, fStatus, isEdit ? null : fRepeat, fForecast, fBill, h('div', { class: 'field f-restricted' }, restricted)),
     suggestNote,
     billInfo,
     toggles, parcelBox, repeatBox, detailsBox,
@@ -213,8 +207,9 @@ export function openEntryForm(opts = {}) {
     restricted.parentElement.hidden = t !== 'income';
     parcelChip.hidden = t !== 'expense';
     if (t !== 'expense') mode.parcel = false;
-    fRepeat.hidden = t === 'transfer' || isEdit;
-    if (t === 'transfer') { mode.repeat = false; repeatSel.value = 'none'; }
+    fRepeat.hidden = t === 'transfer' || isEdit || isRefund;
+    if (t === 'transfer') { mode.repeat = false; rep.set('none'); }
+    rep.update();
     category.setOptions(categoryOptions(t, category.getValue()));
     category.setRecent(recentIds('categoryId', { type: t === 'income' ? 'income' : 'expense' }));
     syncSource(); syncTransfer(); syncExtras();
@@ -265,13 +260,20 @@ export function openEntryForm(opts = {}) {
   function syncExtras() {
     parcelBox.hidden = !mode.parcel;
     repeatBox.hidden = !mode.repeat;
-    customRow.hidden = repeatSel.value !== 'custom';
     repeatSel.disabled = mode.parcel;
-    updateRepeatSummary();
+    const rmode = rep.mode;
+    rep.update();
+    // Previsão mensal: o valor é o total do mês e não há "pago" na criação.
+    fStatus.hidden = rmode === 'forecast';
+    tbdRow.hidden = !(!mode.repeat && !mode.parcel && type !== 'transfer' && (status.getValue() === 'planned' || tbd.checked) && !(existing && existing.status === 'done'));
+    if (tbdRow.hidden) tbd.checked = false;
+    date.disabled = tbd.checked;
+    tbdMonth.hidden = !tbd.checked;
+    syncForecast();
     detailsBox.hidden = !mode.details;
     parcelChip.setAttribute('aria-pressed', String(mode.parcel));
     detailsChip.setAttribute('aria-pressed', String(mode.details));
-    fAmount.querySelector('.field-label').textContent = mode.parcel ? 'Valor total' : isRefund ? 'Valor devolvido' : 'Valor';
+    fAmount.querySelector('.field-label').textContent = mode.parcel ? 'Valor total' : isRefund ? 'Valor devolvido' : rmode === 'forecast' ? 'Valor previsto no mês' : rmode === 'flex' || rmode === 'days' ? 'Valor de cada ocorrência' : 'Valor';
     const acc = repo.get('accounts', source.getValue());
     if (mode.parcel && !parcelFirst.dataset.touched) parcelFirst.value = isCard(acc) && isISODate(date.value) ? billFor(date.value, acc).month : monthOf(date.value || today());
     billInfo.hidden = !(isCard(acc) && (type === 'expense' || type === 'refund') && !mode.parcel);
@@ -290,22 +292,31 @@ export function openEntryForm(opts = {}) {
       : `1ª de ${formatMoney(parts[0])} e ${n - 1}× de ${formatMoney(parts[n - 1])}`) + ` · total exato ${formatMoney(total)} · última em ${formatMonth(last)}`;
   }
   parcelCount.addEventListener('input', updatePreview);
-  function repeatRule() {
-    const preset = REPEAT_PRESETS[repeatSel.value];
-    if (repeatSel.value === 'custom') return { frequency: customUnit.value, interval: Math.max(1, Math.min(60, Number(customN.value) || 1)) };
-    return preset?.frequency ? { frequency: preset.frequency, interval: preset.interval } : null;
+  function syncForecast() {
+    const m = tbd.checked ? tbdMonth.value : isISODate(date.value) ? competenceOf({ type, date: date.value }, repo.get('accounts', source.getValue())) : ui.month;
+    const ctx = repo.context();
+    const rules = repo.list('recurrences').filter((r) => ruleMode(r) === 'forecast' && !r.archived && r.type === 'expense');
+    const show = (type === 'expense') && !mode.repeat && !mode.parcel && rules.length > 0 && !(existing?.recurrenceId);
+    fForecast.hidden = !show;
+    if (!show) return;
+    const cur = forecastSel.value || base.forecastId || '';
+    put(forecastSel, h('option', { value: '' }, 'Não vincular'), ...rules.map((r) => {
+      const used = ctx.forecastUse.get(`${r.id}|${m}`) || 0;
+      const left = r.amount - used;
+      return h('option', { value: r.id }, `${r.description} · ${left >= 0 ? `restam ${formatMoney(left)}` : `${formatMoney(-left)} acima`}`);
+    }));
+    forecastSel.value = rules.some((r) => r.id === cur) ? cur : '';
+    // Sugestão: mesma categoria da previsão (nunca sobrescreve uma escolha manual).
+    if (!forecastTouched && !forecastSel.value) {
+      const match = rules.find((r) => r.categoryId && r.categoryId === category.getValue());
+      if (match) forecastSel.value = match.id;
+    }
   }
-  function updateRepeatSummary() {
-    const r = repeatRule();
-    if (!r) { repeatSummary.textContent = ''; return; }
-    const parts = [describeFrequency(r), `a partir de ${isISODate(date.value) ? formatDate(date.value) : 'hoje'}`];
-    if (repeatCount.value) parts.push(`${repeatCount.value} vez(es)`);
-    else if (repeatEnd.value) parts.push(`até ${formatDate(repeatEnd.value)} (inclusive)`);
-    else parts.push('sem data de término');
-    repeatSummary.textContent = `${parts.join(' · ')}. As próximas ocorrências aparecem como previstas no calendário e nas projeções.`;
-  }
-  repeatSel.addEventListener('change', () => { mode.repeat = repeatSel.value !== 'none'; if (mode.repeat) mode.parcel = false; if (repeatSel.value === 'custom') repeatBox.open = true; syncExtras(); });
-  for (const el of [customN, customUnit, repeatEnd, repeatCount, repeatDay]) el.addEventListener('input', updateRepeatSummary);
+  forecastSel.addEventListener('change', () => { forecastTouched = true; dirty = true; });
+  // Ocorrência de série: o mês previsto é o do compromisso, não pode ser trocado aqui.
+  if (occ || existing?.recurrenceId) tbdMonth.disabled = true;
+  tbd.addEventListener('change', () => { dirty = true; if (tbd.checked) { status.setValue('planned'); statusTouched = true; if (isISODate(date.value)) tbdMonth.value = monthOf(date.value); } syncExtras(); });
+  tbdMonth.addEventListener('change', syncForecast);
   date.addEventListener('change', () => {
     dirty = true;
     hideSimilar();
@@ -334,7 +345,7 @@ export function openEntryForm(opts = {}) {
   }
   async function payOccurrence(v, data) {
     try {
-      await repo.materializeOccurrence(v.recurrenceId, v.occurrenceDate, { status: 'done', amount: data.amount, date: data.date, sourceId: data.sourceId || v.sourceId, categoryId: data.categoryId || v.categoryId, blockId: data.blockId || v.blockId });
+      await repo.materializeOccurrence(v.recurrenceId, v.occurrenceKey || v.occurrenceDate, { status: 'done', amount: data.amount, date: data.date, sourceId: data.sourceId || v.sourceId, categoryId: data.categoryId || v.categoryId, blockId: data.blockId || v.blockId });
       dirty = false; modal.close();
       toast(`“${v.description}” marcada como paga`, { tone: 'success' });
     } catch (err) { toastError(err); }
@@ -356,7 +367,9 @@ export function openEntryForm(opts = {}) {
     const errors = [];
     const cents = amount.getValue();
     if (cents == null || cents <= 0) { fAmount.setError('Informe um valor maior que zero'); errors.push(amount.input); } else fAmount.setError('');
-    if (!isISODate(date.value)) { fDate.setError('Data inválida'); errors.push(date); } else fDate.setError('');
+    const undated = !tbdRow.hidden && tbd.checked;
+    if (undated) { if (!isMonth(tbdMonth.value)) { fDate.setError('Escolha o mês previsto'); errors.push(tbdMonth); } else fDate.setError(''); }
+    else if (!isISODate(date.value)) { fDate.setError('Data inválida'); errors.push(date); } else fDate.setError('');
     if (type === 'transfer') {
       const from = source.getValue(), to = toAcc.getValue();
       if (!from) { fSource.setError('Escolha de qual conta sai o dinheiro'); errors.push(source.button); } else fSource.setError('');
@@ -368,16 +381,17 @@ export function openEntryForm(opts = {}) {
       if (!count) { errors.push(parcelCount); toast('Parcelas: informe de 2 a 120', { tone: 'error' }); }
       if (!isMonth(parcelFirst.value)) errors.push(parcelFirst);
     }
-    if (mode.repeat && repeatEnd.value && repeatEnd.value < date.value) { errors.push(repeatEnd); toast('A data de término é anterior ao início', { tone: 'error' }); }
-    if (mode.repeat && repeatCount.value && !readInt(repeatCount, { min: 1, max: 600 })) { errors.push(repeatCount); toast('Quantidade de repetições: de 1 a 600', { tone: 'error' }); }
-    if (mode.repeat && repeatDay.value && !readInt(repeatDay, { min: 1, max: 31 })) { errors.push(repeatDay); toast('Dia de vencimento: de 1 a 31', { tone: 'error' }); }
+    const repErr = mode.repeat ? rep.validate() : null;
+    if (repErr) { errors.push(repeatSel); toast(repErr, { tone: 'error' }); }
     if (errors.length) { errors[0].focus(); return null; }
     const acc = repo.get('accounts', source.getValue());
     const data = {
       type: isRefund ? 'refund' : type,
-      status: status.getValue(),
+      status: undated ? 'planned' : status.getValue(),
       amount: cents,
-      date: date.value,
+      date: undated ? null : date.value,
+      period: undated ? tbdMonth.value : undefined,
+      month: undated ? tbdMonth.value : undefined,
       description: desc.input.value.trim(),
       categoryId: type === 'transfer' ? null : category.getValue(),
       blockId: type === 'expense' || isRefund ? block.getValue() : null,
@@ -387,13 +401,14 @@ export function openEntryForm(opts = {}) {
       restricted: type === 'income' ? restricted.input.checked : undefined,
       method: method.value || null,
       note: note.value.trim() || null,
+      forecastId: !fForecast.hidden && forecastSel.value ? forecastSel.value : (existing?.forecastId && fForecast.hidden ? existing.forecastId : null),
     };
     if (refundOf) data.refundOf = refundOf.id;
     const card = isCard(acc) && (data.type === 'expense' || data.type === 'refund');
     if (existing?.planId) { data.monthManual = true; data.month = monthManual && manualMonth ? manualMonth : existing.month; }
-    else if (card && monthManual && isMonth(manualMonth)) { data.monthManual = true; data.month = manualMonth; }
+    else if (card && monthManual && isMonth(manualMonth) && !undated) { data.monthManual = true; data.month = manualMonth; }
     else data.monthManual = false;
-    return { data, count, repeat: mode.repeat ? repeatRule() : null };
+    return { data, count, repeat: mode.repeat ? rep.read() : null };
   }
 
   async function submit(again) {
@@ -403,7 +418,7 @@ export function openEntryForm(opts = {}) {
     const { data } = c;
     pendingAgain = again;
     // Aviso de semelhança somente em lançamentos novos e avulsos; nunca bloqueia.
-    if (!isEdit && !similarAck && !mode.parcel && data.type !== 'transfer') {
+    if (!isEdit && !similarAck && !mode.parcel && data.type !== 'transfer' && data.date) {
       const month = data.monthManual ? data.month : competenceOf({ ...data }, repo.get('accounts', data.sourceId));
       const res = findSimilar({ ...data, id: draftId, month }, repo.context());
       if (res.matches.length || (res.occurrence && !mode.repeat)) { showSimilar(res, data); return; }
@@ -416,56 +431,62 @@ export function openEntryForm(opts = {}) {
       // Ocorrência de série: pergunta o escopo quando muda algo que define a série.
       const ruleId = existing?.recurrenceId || occ?.ruleId;
       const rule = ruleId ? repo.get('recurrences', ruleId) : null;
+      const rmode = rule ? ruleMode(rule) : null;
       const seriesKeys = ['amount', 'description', 'categoryId', 'blockId', 'sourceId'];
       const changed = rule ? seriesKeys.filter((k) => (data[k] ?? null) !== (rule[k] ?? null)) : [];
       let scope = 'one';
-      if (rule && changed.length) {
+      if (rule && changed.length && !existing?.remainderOf) {
         saving = false;
         saveBtn.classList.remove('is-busy');
-        scope = await askScope({ title: 'Aplicar a alteração a…' });
+        scope = await askScope({ title: 'Aplicar a alteração a…', allowMonth: rmode === 'days' || rmode === 'flex' });
         if (!scope) return;
         saving = true;
         saveBtn.classList.add('is-busy');
       }
-      const occDate = existing?.occurrenceDate || occ?.date;
+      const occKey = existing?.occurrenceKey || existing?.occurrenceDate || occ?.key || occ?.date;
+      const period = existing?.period || occ?.period || (occKey ? String(occKey).slice(0, 7) : null);
       const seriesChanges = Object.fromEntries(changed.map((k) => [k, data[k] ?? null]));
       if (existing) {
         await repo.saveTransaction({ ...existing, ...data, id: existing.id }, { baseRev: existing.rev || 0 });
       } else if (occ) {
-        await repo.materializeOccurrence(occ.ruleId, occ.date, data);
+        await repo.materializeOccurrence(occ.ruleId, occKey, data);
       }
-      if (rule && scope === 'future') await repo.editSeriesFrom(rule.id, addDays(occDate, 1), seriesChanges);
-      else if (rule && scope === 'all') await repo.saveRecurrence({ ...rule, ...seriesChanges });
+      if (rule && scope === 'month' && period) await repo.editSeriesPeriod(rule.id, period, seriesChanges);
+      else if (rule && scope === 'future') {
+        const from = rmode === 'fixed' ? addDays(existing?.occurrenceDate || occ?.date || data.date, 1) : firstDay(addMonths(period, 1));
+        await repo.editSeriesFrom(rule.id, from, seriesChanges);
+      } else if (rule && scope === 'all') await repo.saveRecurrence({ ...rule, ...seriesChanges });
       if (existing || occ) {
         // já gravado acima
       } else if (mode.parcel) {
         const plan = await repo.createInstallmentPlan({ ...data, id: draftId, total: data.amount, count: c.count, purchaseDate: data.date, firstMonth: parcelFirst.value });
         undo = () => repo.deletePlan(plan.id);
       } else if (mode.repeat && c.repeat) {
-        // Dia de vencimento (mensal/anual): a primeira ocorrência é a próxima data com esse dia.
-        const day = readInt(repeatDay, { min: 1, max: 31 });
-        let start = data.date;
-        if (day && c.repeat.frequency !== 'weekly') {
-          start = dateInMonth(monthOf(data.date), day);
-          if (start < data.date) start = dateInMonth(addMonths(monthOf(data.date), 1), day);
-        }
-        const count = readInt(repeatCount, { min: 1, max: 600 });
-        const rule = await repo.createRecurrence({
-          id: draftId, type: data.type, description: data.description || categoryName(data.categoryId), amount: data.amount, startDate: start,
-          endDate: count ? null : repeatEnd.value || null, count: count || undefined, anchorDay: day && c.repeat.frequency !== 'weekly' ? day : undefined,
-          frequency: c.repeat.frequency, interval: c.repeat.interval, categoryId: data.categoryId, blockId: data.blockId, sourceId: data.sourceId, restricted: data.restricted,
-        }, data.status === 'done' && start === data.date ? { ...data, status: 'done' } : null);
-        undo = () => repo.deleteRecurrence(rule.id);
+        const r = c.repeat;
+        const m = r.mode || 'fixed';
+        // A ocorrência que deu origem à série: registrada já paga ou com a data escolhida.
+        let first = null;
+        if (m === 'flex') first = { ...data, period: undefined, month: undefined };
+        else if (m === 'days') first = data.status === 'done' && r.days.includes(Number(data.date.slice(8, 10))) ? { ...data } : null;
+        else if (m === 'fixed') first = data.status === 'done' && r.startDate === data.date ? { ...data, status: 'done' } : null;
+        const created = await repo.createRecurrence({
+          id: draftId, type: data.type, description: data.description || categoryName(data.categoryId), amount: data.amount,
+          startDate: r.startDate, endDate: r.endDate || null, count: r.count, anchorDay: r.anchorDay, mode: r.mode, days: r.days, perPeriod: r.perPeriod,
+          frequency: r.frequency, interval: r.interval, categoryId: data.categoryId, blockId: data.blockId, sourceId: data.sourceId, method: data.method,
+          restricted: data.restricted, estimated: r.estimated,
+        }, first);
+        undo = () => repo.deleteRecurrence(created.id);
       } else {
         const saved = await repo.saveTransaction({ ...data, id: draftId });
         undo = () => repo.deleteTransaction(saved.id);
       }
       dirty = false;
       modal.close();
-      toast(isEdit ? 'Alterações salvas' : mode.parcel ? `Parcelamento criado em ${c.count} parcelas` : mode.repeat ? 'Lançamento recorrente criado' : 'Lançamento salvo', {
+      const repMsg = c.repeat ? (c.repeat.mode === 'forecast' ? 'Previsão mensal criada' : c.repeat.mode === 'flex' ? 'Compromisso mensal criado: defina as datas em Planejamento → Compromissos' : 'Lançamento recorrente criado') : null;
+      toast(isEdit ? 'Alterações salvas' : mode.parcel ? `Parcelamento criado em ${c.count} parcelas` : mode.repeat ? repMsg : data.date ? 'Lançamento salvo' : `Compromisso previsto para ${formatMonth(data.period)} (data a definir)`, {
         tone: 'success', action: undo ? { label: 'Desfazer', fn: () => undo().catch(toastError) } : null,
       });
-      if (again) openEntryForm({ defaults: { type: data.type === 'refund' ? 'expense' : data.type, date: data.date, sourceId: data.sourceId, status: data.status } });
+      if (again) openEntryForm({ defaults: { type: data.type === 'refund' ? 'expense' : data.type, date: data.date || defaultDate(), sourceId: data.sourceId, status: data.status } });
     } catch (err) {
       toastError(err);
     } finally {
