@@ -1,7 +1,8 @@
 import { h, icon, isTypingTarget, put, prefersReducedMotion } from './utils/dom.js';
 import * as repo from './database/repository.js';
 import { ui, onUI, shiftMonth, goToday, readPref, writePref } from './state.js';
-import { initTheme, applyTheme, currentThemePref } from './theme.js';
+import { initTheme, applyTheme, currentThemePref, applyDensity, currentDensity } from './theme.js';
+import { getSectionOptions, flushLayout } from './components/layout.js';
 import { initCalculator, toggleCalculator, isCalculatorOpen } from './components/calculator.js';
 import { openEntryForm } from './components/entry-form.js';
 import { hasModal } from './components/modal.js';
@@ -163,7 +164,12 @@ async function boot() {
       h('button', { class: 'btn', type: 'button', onclick: () => location.reload() }, 'Tentar novamente')));
     return;
   }
+  // Densidade salva no layout (ex.: vinda de um backup restaurado) prevalece sobre a do navegador.
+  const syncDensity = () => { const d = getSectionOptions('global').density; if (d && d !== currentDensity()) applyDensity(d); };
+  syncDensity();
+  window.addEventListener('pagehide', () => { flushLayout(); });
   repo.subscribe((origin) => {
+    syncDensity();
     if (origin === 'versionchange') {
       toast('O Fluxo foi atualizado em outra aba. Recarregue esta página para continuar com segurança.', { tone: 'error', timeout: 60000, action: { label: 'Recarregar', fn: () => location.reload() } });
       return;

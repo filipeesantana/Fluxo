@@ -1,8 +1,9 @@
-import { openDB, loadAll, loadRecent, loadOlder, getByKeys, commit, replaceAll, requestPersistence, setVersionChangeHandler } from './db.js';
+import { openDB, loadAll, loadRecent, loadOlder, getByKeys, commit, replaceAll, listSnapshots, requestPersistence, setVersionChangeHandler } from './db.js';
 import { STORES } from './schema.js';
 import { VALIDATORS, normalizeName, sameName } from '../services/validation.js';
 import { competenceOf, isCard, billFor } from '../services/cards.js';
 import { buildInstallments } from '../services/installments.js';
+import { endDateForCount } from '../services/recurrence.js';
 import { createContext } from '../services/finance.js';
 import { today, addDays, currentMonth, monthOf, addMonths } from '../utils/dates.js';
 import { uid } from '../utils/dom.js';
@@ -52,6 +53,7 @@ export function whenFullyLoaded() { return fullyLoaded ? Promise.resolve() : ful
 
 export async function init() {
   setVersionChangeHandler(() => {
+    dbClosed = true;
     for (const fn of listeners) fn('versionchange');
   });
   await openDB();
@@ -73,6 +75,8 @@ export async function init() {
     channel.onmessage = async (ev) => {
       try {
         const msg = ev.data || {};
+        if (msg.t === 'lock') { writeLock = msg.reason || 'restore'; notify('lock'); return; }
+        if (msg.t === 'unlock') { writeLock = null; notify('lock'); return; }
         if (msg.t === 'ops' && Array.isArray(msg.ops)) {
           // Sincronização incremental: relê apenas os registros alterados.
           const byStore = new Map();
@@ -85,6 +89,7 @@ export async function init() {
         } else {
           await whenFullyLoaded();
           await reloadFromDB();
+          writeLock = null;
         }
         notify('remote');
       } catch { /* aba antiga: ignora */ }
@@ -106,18 +111,56 @@ async function seed() {
 }
 
 /** Valida, grava atomicamente no IndexedDB e só então atualiza a memória. */
-async function apply(ops, { broadcast = true } = {}) {
-  for (const op of ops) {
+// Estado da camada de dados nesta aba.
+let writeLock = null;   // motivo do bloqueio (ex.: restauração em outra aba)
+let dbClosed = false;   // banco fechado por atualização de versão em outra aba
+
+export const writeBlockedReason = () => writeLock || (dbClosed ? 'closed' : null);
+
+function assertWritable() {
+  if (dbClosed) throw new ValidationError('O banco foi atualizado por outra aba. Recarregue esta página antes de continuar; nada foi gravado.');
+  if (writeLock) throw new ValidationError('Há uma restauração de backup em andamento em outra aba. Aguarde a conclusão; nada foi gravado.');
+}
+
+/**
+ * Valida, grava atomicamente no IndexedDB e só então atualiza a memória.
+ * Cada registro financeiro carrega uma revisão (`rev`). A gravação exige que o
+ * banco ainda tenha a revisão que esta aba conhece: se outra aba alterou ou
+ * excluiu o registro nesse meio tempo, nada é gravado (ConflictError).
+ */
+async function apply(ops, { broadcast = true, silent = false } = {}) {
+  assertWritable();
+  const prepared = ops.map((op) => {
+    if (op.store === 'meta') return op;
+    const key = op.put ? keyOf(op.store, op.put) : op.del;
+    const prev = data[op.store].get(key);
+    const expectRev = prev ? (prev.rev || 0) : 'absent';
+    if (op.put) return { ...op, expectRev, put: { ...op.put, rev: (prev?.rev || 0) + 1 } };
+    return prev ? { ...op, expectRev } : op;
+  });
+  for (const op of prepared) {
     if (!op.put) continue;
     const errs = VALIDATORS[op.store](op.put);
     if (errs.length) throw new ValidationError(errs.join('; '));
   }
-  await commit(ops);
-  for (const op of ops) {
+  try {
+    await commit(prepared);
+  } catch (err) {
+    if (err?.name === 'ConflictError') {
+      // Atualiza a memória com o estado real do banco para o usuário revisar.
+      const fresh = await getByKeys(err.store, [err.key]).catch(() => null);
+      const row = fresh?.get(err.key);
+      if (row) data[err.store].set(err.key, row); else if (fresh) data[err.store].delete(err.key);
+      notify('conflict');
+      throw new ValidationError(`${err.message} A tela foi atualizada com a versão mais recente; revise e tente novamente. Nada foi gravado.`);
+    }
+    throw err;
+  }
+  for (const op of prepared) {
     if (op.put) data[op.store].set(keyOf(op.store, op.put), op.put);
     else data[op.store].delete(op.del);
   }
-  notify();
+  if (silent) ctxCache = null; else notify();
   if (broadcast) channel?.postMessage({ t: 'ops', ops: ops.map((op) => ({ store: op.store, key: op.put ? keyOf(op.store, op.put) : op.del })) });
   if (!data.meta.get('persistAsked')) {
     data.meta.set('persistAsked', { key: 'persistAsked', value: true });
@@ -200,8 +243,19 @@ function defaultDescription(tx) {
   return data.categories.get(tx.categoryId)?.name || (tx.type === 'income' ? 'Receita' : 'Despesa');
 }
 
-export async function saveTransaction(input) {
+/**
+ * opts.baseRev: revisão em que a edição foi baseada (formulário aberto). Se o
+ * registro mudou desde então — em outra aba, por exemplo — a gravação é
+ * recusada em vez de sobrescrever a alteração mais recente.
+ */
+export async function saveTransaction(input, { baseRev } = {}) {
   const prev = input.id ? data.transactions.get(input.id) : null;
+  if (baseRev !== undefined && prev && (prev.rev || 0) !== (baseRev || 0)) {
+    throw new ValidationError('Este lançamento foi alterado em outra aba enquanto você editava. Feche o formulário e abra novamente para ver a versão atual; nada foi gravado.');
+  }
+  if (baseRev !== undefined && !prev && input.id && baseRev !== null) {
+    throw new ValidationError('Este lançamento foi excluído em outra aba enquanto você editava; nada foi gravado.');
+  }
   const tx = normalizeTransaction(input, prev);
   if (tx.recurrenceId && tx.occurrenceDate) {
     const clash = list('transactions').find((t) => t.id !== tx.id && t.recurrenceId === tx.recurrenceId && t.occurrenceDate === tx.occurrenceDate);
@@ -256,17 +310,100 @@ export async function saveRecurrence(input) {
     createdAt: prev?.createdAt || Date.now(),
     updatedAt: Date.now(),
   };
-  if (rule.type === 'income') rule.restricted = Boolean(input.restricted) || data.accounts.get(rule.sourceId)?.kind === 'benefit';
+  finalizeRule(rule);
   await apply([{ store: 'recurrences', put: rule }]);
   return rule;
 }
+
+/** Normaliza campos derivados de uma regra (âncora do dia, quantidade → data final, benefício). */
+function finalizeRule(rule) {
+  if (rule.frequency !== 'weekly' && !rule.anchorDay) rule.anchorDay = Number(rule.startDate.slice(8, 10));
+  if (rule.frequency === 'weekly') delete rule.anchorDay;
+  if (rule.count) rule.endDate = endDateForCount(rule, rule.count);
+  if (rule.type === 'income') rule.restricted = Boolean(rule.restricted) || data.accounts.get(rule.sourceId)?.kind === 'benefit';
+  if (!rule.pauses?.length) delete rule.pauses;
+  return rule;
+}
+
+/**
+ * Cria a regra e, opcionalmente, sua primeira ocorrência já realizada, em UMA
+ * transação: nunca fica uma regra sem a ocorrência paga (ou o contrário).
+ * Idempotente pelo id da regra.
+ */
+export async function createRecurrence(input, firstOccurrence = null) {
+  if (input.id && data.recurrences.has(input.id)) return data.recurrences.get(input.id);
+  const rule = finalizeRule({
+    ...input, id: input.id || uid(), description: String(input.description || '').trim().slice(0, 200), interval: input.interval || 1,
+    endDate: input.endDate || null, categoryId: input.categoryId || null, blockId: input.blockId || null, sourceId: input.sourceId || null,
+    exceptions: {}, createdAt: Date.now(), updatedAt: Date.now(),
+  });
+  const ops = [{ store: 'recurrences', put: rule }];
+  if (firstOccurrence) {
+    const date = firstOccurrence.date || rule.startDate;
+    ops.push({ store: 'transactions', put: normalizeTransaction({
+      type: rule.type, description: rule.description, amount: rule.amount, date, categoryId: rule.categoryId, blockId: rule.blockId,
+      sourceId: rule.sourceId, restricted: rule.restricted, ...firstOccurrence, id: `${rule.id}:${date}`, recurrenceId: rule.id, occurrenceDate: date,
+    }) });
+  }
+  await apply(ops);
+  return rule;
+}
+
+/**
+ * Transforma um lançamento existente em recorrente: a regra começa na data do
+ * lançamento e o próprio lançamento passa a ser a primeira ocorrência
+ * (nenhuma cópia é criada).
+ */
+export async function convertToRecurring(txId, { frequency = 'monthly', interval = 1, endDate = null, count = null } = {}) {
+  const tx = data.transactions.get(txId);
+  if (!tx) throw new ValidationError('Lançamento não encontrado.');
+  if (tx.recurrenceId) throw new ValidationError('Este lançamento já faz parte de uma recorrência.');
+  if (tx.planId) throw new ValidationError('Parcelas não podem virar recorrência; use o parcelamento.');
+  if (tx.type === 'transfer' || tx.type === 'refund') throw new ValidationError('Somente receitas e despesas podem ser recorrentes.');
+  const rule = finalizeRule({
+    id: uid(), type: tx.type, description: tx.description, amount: tx.amount, startDate: tx.date, endDate, count: count || undefined,
+    frequency, interval, categoryId: tx.categoryId, blockId: tx.blockId, sourceId: tx.sourceId, restricted: tx.restricted,
+    exceptions: {}, createdAt: Date.now(), updatedAt: Date.now(),
+  });
+  if (!rule.count) delete rule.count;
+  await apply([
+    { store: 'recurrences', put: rule },
+    { store: 'transactions', put: { ...tx, recurrenceId: rule.id, occurrenceDate: tx.date, updatedAt: Date.now() } },
+  ]);
+  return rule;
+}
+
+/** Pausa a série a partir de `fromDate` (ocorrências futuras deixam de ser projetadas). */
+export async function pauseRecurrence(ruleId, fromDate) {
+  const rule = data.recurrences.get(ruleId);
+  if (!rule) return;
+  const pauses = [...(rule.pauses || []).filter((p) => p.to), { from: fromDate, to: null }];
+  const ops = [{ store: 'recurrences', put: { ...rule, pauses, updatedAt: Date.now() } }];
+  for (const t of list('transactions')) if (t.recurrenceId === ruleId && t.occurrenceDate >= fromDate && t.status === 'planned') ops.push({ store: 'transactions', del: t.id });
+  await apply(ops);
+}
+
+/** Retoma a série: ocorrências a partir de `date` voltam a ser projetadas. */
+export async function resumeRecurrence(ruleId, date) {
+  const rule = data.recurrences.get(ruleId);
+  if (!rule) return;
+  const pauses = (rule.pauses || []).map((p) => (p.to ? p : { from: p.from, to: addDays(date, -1) < p.from ? p.from : addDays(date, -1) }));
+  await apply([{ store: 'recurrences', put: { ...rule, pauses, updatedAt: Date.now() } }]);
+}
+
+export const isRulePaused = (rule) => (rule.pauses || []).some((p) => !p.to);
+
+const existingOcc = (ruleId, date) => list('transactions').find((t) => t.recurrenceId === ruleId && t.occurrenceDate === date);
 
 function occurrenceTx(rule, date, overrides = {}) {
   return normalizeTransaction({
     type: rule.type, status: 'planned', description: rule.description, amount: rule.amount, date,
     categoryId: rule.categoryId, blockId: rule.blockId, sourceId: rule.sourceId, restricted: rule.restricted,
     recurrenceId: rule.id, occurrenceDate: date, ...overrides,
-  }, list('transactions').find((t) => t.recurrenceId === rule.id && t.occurrenceDate === date));
+    // Identidade determinística: a mesma ocorrência sempre tem o mesmo id,
+    // mesmo que valor ou data sejam ajustados depois.
+    id: existingOcc(rule.id, date)?.id || `${rule.id}:${date}`,
+  }, existingOcc(rule.id, date));
 }
 
 /** Transforma uma ocorrência projetada em movimentação real (paga ou editada). */
@@ -278,13 +415,26 @@ export async function materializeOccurrence(ruleId, date, overrides) {
   return tx;
 }
 
-export async function skipOccurrence(ruleId, date) {
+/**
+ * Ignora a ocorrência de `date`. Por padrão só remove a versão prevista;
+ * com removeDone (exclusão pedida explicitamente) remove também a realizada.
+ */
+export async function skipOccurrence(ruleId, date, { removeDone = false } = {}) {
   const rule = data.recurrences.get(ruleId);
   if (!rule) return;
   const ops = [{ store: 'recurrences', put: { ...rule, exceptions: { ...(rule.exceptions || {}), [date]: 'skipped' }, updatedAt: Date.now() } }];
-  const mat = list('transactions').find((t) => t.recurrenceId === ruleId && t.occurrenceDate === date && t.status === 'planned');
+  const mat = list('transactions').find((t) => t.recurrenceId === ruleId && t.occurrenceDate === date && (removeDone || t.status === 'planned'));
   if (mat) ops.push({ store: 'transactions', del: mat.id });
   await apply(ops);
+}
+
+/** Desfaz a exclusão de uma ocorrência (volta a exceção e o lançamento, atomicamente). */
+export async function restoreOccurrence(ruleId, tx) {
+  const rule = data.recurrences.get(ruleId);
+  if (!rule) return restoreTransactions([tx]);
+  const exceptions = { ...(rule.exceptions || {}) };
+  delete exceptions[tx.occurrenceDate];
+  await apply([{ store: 'recurrences', put: { ...rule, exceptions, updatedAt: Date.now() } }, { store: 'transactions', put: tx }]);
 }
 
 export async function unskipOccurrence(ruleId, date) {
@@ -296,10 +446,14 @@ export async function unskipOccurrence(ruleId, date) {
 }
 
 /** Encerra a série a partir de `fromDate` (inclusive). Ocorrências já pagas são preservadas. */
-export async function endSeries(ruleId, fromDate) {
+export async function endSeries(ruleId, fromDate, { removeDoneFrom = null } = {}) {
   const rule = data.recurrences.get(ruleId);
   if (!rule) return;
   const ops = [];
+  if (removeDoneFrom) {
+    const own = list('transactions').find((t) => t.recurrenceId === ruleId && t.occurrenceDate === removeDoneFrom && t.status === 'done');
+    if (own) ops.push({ store: 'transactions', del: own.id });
+  }
   const endDate = addDays(fromDate, -1);
   if (endDate < rule.startDate) ops.push({ store: 'recurrences', put: { ...rule, archived: true, endDate: rule.startDate, updatedAt: Date.now() } });
   else ops.push({ store: 'recurrences', put: { ...rule, endDate, updatedAt: Date.now() } });
@@ -316,12 +470,14 @@ export async function editSeriesFrom(ruleId, fromDate, changes) {
   if (fromDate <= rule.startDate) return saveRecurrence({ ...rule, ...changes, id: rule.id });
   const nextId = uid();
   const exceptions = Object.fromEntries(Object.entries(rule.exceptions || {}).filter(([d]) => d >= fromDate));
-  const next = { ...rule, ...changes, id: nextId, startDate: changes.startDate || fromDate, exceptions, createdAt: Date.now(), updatedAt: Date.now() };
+  // A continuação preserva o dia de referência (ex.: 31) mesmo começando em um mês curto.
+  const next = { ...rule, ...changes, id: nextId, startDate: changes.startDate || fromDate, exceptions, anchorDay: changes.anchorDay || rule.anchorDay || Number(rule.startDate.slice(8, 10)), createdAt: Date.now(), updatedAt: Date.now() };
+  delete next.count;
   next.endDate = changes.endDate !== undefined ? changes.endDate : rule.endDate;
   if (next.endDate && next.endDate < next.startDate) next.endDate = null;
   const ops = [
     { store: 'recurrences', put: { ...rule, endDate: addDays(fromDate, -1), updatedAt: Date.now() } },
-    { store: 'recurrences', put: { ...next, description: String(next.description).trim() } },
+    { store: 'recurrences', put: finalizeRule({ ...next, description: String(next.description).trim() }) },
   ];
   for (const t of list('transactions')) {
     if (t.recurrenceId !== ruleId || t.occurrenceDate < fromDate) continue;
@@ -535,19 +691,60 @@ export async function fullSnapshot() {
 }
 
 /** Substitui toda a base pelo conteúdo do backup já validado (atômico). */
-export async function importData(backupData) {
+/**
+ * Substitui toda a base pelo conteúdo de um backup JÁ VALIDADO.
+ * - coordena as abas: as outras param de gravar até o fim (BroadcastChannel)
+ *   e, quando suportado, um Web Lock impede duas restaurações simultâneas;
+ * - guarda um snapshot interno do estado anterior na MESMA transação;
+ * - se qualquer etapa falhar, a transação é abortada e a base anterior fica intacta.
+ */
+export async function importData(backupData, { reason = 'restore' } = {}) {
+  assertWritable();
   const clean = Object.fromEntries(STORES.map((s) => [s, (backupData[s] || []).map((r) => structuredClone(r))]));
   if (!clean.meta.some((m) => m.key === 'seeded')) clean.meta.push({ key: 'seeded', value: true, at: Date.now() });
   await whenFullyLoaded();
-  await replaceAll(clean);
-  await reloadFromDB();
+  const run = async () => {
+    channel?.postMessage({ t: 'lock', reason });
+    try {
+      const current = await loadAll();
+      const hasData = STORES.some((st) => st !== 'meta' && (current[st] || []).length);
+      const snapshot = hasData ? { id: new Date().toISOString(), createdAt: Date.now(), reason, counts: Object.fromEntries(STORES.map((st) => [st, (current[st] || []).length])), data: JSON.stringify(current) } : null;
+      await replaceAll(clean, { snapshot });
+      await reloadFromDB();
+    } finally {
+      channel?.postMessage({ t: 'reload', at: Date.now() });
+    }
+  };
+  if (globalThis.navigator?.locks?.request) await navigator.locks.request('fluxo-restore', { mode: 'exclusive' }, run);
+  else await run();
   notify();
-  channel?.postMessage({ t: 'reload', at: Date.now() });
 }
 
-export async function wipeAll() {
+export { listSnapshots };
+
+/** Leitura consistente de TODAS as coleções em uma única transação (para backup). */
+export async function readConsistent() {
   await whenFullyLoaded();
-  await replaceAll({ meta: [{ key: 'seeded', value: true, at: Date.now() }] });
-  await reloadFromDB();
+  return loadAll();
+}
+
+/** Registra que um arquivo de backup foi GERADO (não que foi salvo pelo usuário). */
+export async function recordBackup(info) {
+  await apply([{ store: 'meta', put: { key: 'lastBackup', value: { at: Date.now(), ...info } } }], { silent: true });
+}
+/** Preferências visuais (layout): separadas dos dados; gravação silenciosa (sem redesenhar tudo). */
+export async function setUiLayout(value) {
+  await apply([{ store: 'meta', put: { key: 'ui.layout', value } }], { silent: true });
+}
+
+export const lastBackup = () => data.meta.get('lastBackup')?.value || null;
+export const dbState = () => ({ closed: dbClosed, locked: writeLock, fullyLoaded });
+
+// Chaves de meta que NÃO são dados financeiros: sobrevivem a "Apagar dados financeiros".
+const APPEARANCE_META = ['ui.layout', 'lastBackup'];
+
+export async function wipeAll() {
+  const keep = list('meta').filter((m) => APPEARANCE_META.includes(m.key)).map((m) => structuredClone(m));
+  await importData({ meta: [{ key: 'seeded', value: true, at: Date.now() }, ...keep] }, { reason: 'wipe' });
   await seed();
 }

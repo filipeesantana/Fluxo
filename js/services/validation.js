@@ -65,7 +65,10 @@ export function validateRecurrence(r) {
   check(e, r.interval == null || (Number.isInteger(r.interval) && r.interval >= 1 && r.interval <= 60), 'intervalo inválido');
   check(e, isISODate(r.startDate), 'data inicial inválida');
   check(e, r.endDate == null || (isISODate(r.endDate) && r.endDate >= r.startDate), 'data final inválida');
-  check(e, r.exceptions == null || typeof r.exceptions === 'object', 'exceções inválidas');
+  check(e, r.exceptions == null || (typeof r.exceptions === 'object' && !Array.isArray(r.exceptions) && Object.keys(r.exceptions).length <= 5000 && Object.keys(r.exceptions).every(isISODate)), 'exceções inválidas');
+  check(e, r.anchorDay == null || (Number.isInteger(r.anchorDay) && r.anchorDay >= 1 && r.anchorDay <= 31), 'dia de referência inválido');
+  check(e, r.count == null || (Number.isInteger(r.count) && r.count >= 1 && r.count <= 1000), 'quantidade de repetições inválida');
+  check(e, r.pauses == null || (Array.isArray(r.pauses) && r.pauses.length <= 100 && r.pauses.every((p) => p && isISODate(p.from) && (p.to == null || (isISODate(p.to) && p.to >= p.from)))), 'pausas inválidas');
   return e;
 }
 
@@ -122,18 +125,61 @@ export function validateMeta(m) {
   return typeof m.key === 'string' && m.key ? [] : ['chave ausente'];
 }
 
+const FORBIDDEN_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
+const MAX_RECORD_CHARS = 20000;
+
+/**
+ * Proteção estrutural aplicada a TODO registro antes de gravar ou importar:
+ * objeto simples, sem chaves capazes de poluir protótipos, profundidade e
+ * tamanho limitados, números finitos. Dados de backups são sempre tratados
+ * como dados, nunca como código.
+ */
+export function structuralErrors(rec, { maxDepth = 6, maxChars = MAX_RECORD_CHARS } = {}) {
+  const e = [];
+  if (!rec || typeof rec !== 'object' || Array.isArray(rec)) return ['registro não é um objeto'];
+  const proto = Object.getPrototypeOf(rec);
+  if (proto !== Object.prototype && proto !== null) return ['registro com tipo inesperado'];
+  const walk = (v, depth) => {
+    if (depth > maxDepth) { e.push('estrutura profunda demais'); return; }
+    if (typeof v === 'number' && !Number.isFinite(v)) { e.push('número inválido'); return; }
+    if (typeof v === 'function' || typeof v === 'symbol' || typeof v === 'bigint') { e.push('tipo de valor não permitido'); return; }
+    if (v && typeof v === 'object') {
+      for (const k of Object.keys(v)) {
+        if (FORBIDDEN_KEYS.has(k)) { e.push(`chave não permitida: ${k}`); return; }
+        walk(v[k], depth + 1);
+      }
+    }
+  };
+  walk(rec, 0);
+  if (!e.length) {
+    let size = 0;
+    try { size = JSON.stringify(rec).length; } catch { e.push('registro não serializável'); }
+    if (size > maxChars) e.push('registro grande demais');
+  }
+  if (rec.rev != null && !(Number.isInteger(rec.rev) && rec.rev >= 0)) e.push('revisão inválida');
+  return [...new Set(e)];
+}
+
+// Metadados (preferências, layout da personalização) têm estrutura mais aninhada
+// que os registros financeiros, mas continuam limitados em profundidade e tamanho.
+const META_LIMITS = { maxDepth: 12, maxChars: 200000 };
+const guarded = (fn, limits) => (rec) => {
+  const s = structuralErrors(rec, limits);
+  return s.length ? s : fn(rec);
+};
+
 export const VALIDATORS = {
-  transactions: validateTransaction,
-  categories: validateCategory,
-  blocks: validateNamed,
-  accounts: validateAccount,
-  recurrences: validateRecurrence,
-  installmentPlans: validatePlan,
-  budgets: validateBudget,
-  investments: validateInvestment,
-  investmentEvents: validateEvent,
-  goals: validateGoal,
-  meta: validateMeta,
+  transactions: guarded(validateTransaction),
+  categories: guarded(validateCategory),
+  blocks: guarded(validateNamed),
+  accounts: guarded(validateAccount),
+  recurrences: guarded(validateRecurrence),
+  installmentPlans: guarded(validatePlan),
+  budgets: guarded(validateBudget),
+  investments: guarded(validateInvestment),
+  investmentEvents: guarded(validateEvent),
+  goals: guarded(validateGoal),
+  meta: guarded(validateMeta, META_LIMITS),
 };
 
 export function normalizeName(s) {

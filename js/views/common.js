@@ -121,7 +121,8 @@ export function kindOf(item) {
 }
 
 /** Linha de movimentação (sem innerHTML; texto do usuário sempre seguro). */
-export function txRow(item, { onOpen, onMenu, onToggle, showDate = false } = {}) {
+export function txRow(item, { onOpen, onMenu, onToggle, showDate = false, fields } = {}) {
+  const show = (k) => !fields || fields[k] !== false;
   const acc = repo.get('accounts', item.sourceId);
   const meta = [];
   if (item.type === 'transfer') {
@@ -129,9 +130,9 @@ export function txRow(item, { onOpen, onMenu, onToggle, showDate = false } = {})
     const to = repo.get('accounts', item.toAccountId);
     if (isCard(to) && item.billMonth) meta.push(`fatura ${formatMonthShort(item.billMonth)}`);
   } else {
-    meta.push(item.categoryId ? categoryName(item.categoryId) : item.type === 'income' ? 'Receita' : 'Sem categoria');
-    if (item.blockId) meta.push(blockName(item.blockId));
-    if (item.sourceId) meta.push(accountName(item.sourceId));
+    if (show('category')) meta.push(item.categoryId ? categoryName(item.categoryId) : item.type === 'income' ? 'Receita' : 'Sem categoria');
+    if (item.blockId && show('block')) meta.push(blockName(item.blockId));
+    if (item.sourceId && show('source')) meta.push(accountName(item.sourceId));
   }
   const tags = [];
   if (item.installment) tags.push(h('span', { class: 'tag' }, `${item.installment.index}/${item.installment.count}`));

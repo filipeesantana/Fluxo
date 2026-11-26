@@ -2,38 +2,60 @@
 :root {
   --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
 
-  --fs-2xs: 11.5px;
-  --fs-xs: 12px;
-  --fs-sm: 13px;
-  --fs: 14px;
-  --fs-md: 15px;
-  --fs-lg: 18px;   /* títulos de seção */
-  --fs-xl: 26px;   /* títulos de página */
-  --fs-num-sm: 17px;
-  --fs-num: 22px;
-  --fs-num-lg: 30px;
-  --lh: 1.5;
-  --lh-tight: 1.2;
+  /* Tipografia (v3: +1px no padrão; secundários +0,5–1px). As densidades abaixo
+     só trocam tokens — nada de zoom — para manter nitidez e layout previsível. */
+  --fs-2xs: 12px;
+  --fs-xs: 12.5px;
+  --fs-sm: 13.5px;
+  --fs: 15px;
+  --fs-md: 16px;
+  --fs-lg: 18.5px;  /* títulos de seção */
+  --fs-xl: 26px;    /* títulos de página: sem títulos gigantes */
+  --fs-num-sm: 18px;
+  --fs-num: 23px;
+  --fs-num-lg: 31px;
+  --lh: 1.52;
+  --lh-tight: 1.22;
 
   --sp-1: 4px; --sp-2: 8px; --sp-3: 12px; --sp-4: 16px; --sp-5: 20px; --sp-6: 24px; --sp-7: 32px; --sp-8: 40px;
   --gap: 16px;
   --panel-pad: 20px;
+  --row-pad: 10px;
 
   --r-xs: 4px; --r-sm: 6px; --r: 8px; --r-lg: 12px; --r-xl: 14px;
 
-  --control-h: 36px;
-  --control-h-sm: 30px;
-  --control-h-lg: 40px;
+  --control-h: 38px;
+  --control-h-sm: 31px;
+  --control-h-lg: 42px;
 
   /* Movimento */
   --ease-out: cubic-bezier(0.2, 0.8, 0.2, 1);
   --ease-in-out: cubic-bezier(0.4, 0, 0.2, 1);
   --ease-emph: cubic-bezier(0.2, 0.9, 0.25, 1.05);
+  /* Durações centralizadas (ms): clique 80–120 · hover 120–160 · expansão 160–240
+     · modal 180–280 · reorganização 180–300 · gráficos 250–400. */
   --dur-press: 90ms;
   --dur-hover: 130ms;
   --dur-ui: 180ms;
-  --dur-panel: 240ms;
+  --dur-panel: 220ms;
+  --dur-modal: 240ms;
+  --dur-reorg: 220ms;
   --dur-chart: 320ms;
+}
+
+/* Densidade da interface (Configurações → Aparência). */
+:root[data-density="compact"] {
+  --fs-2xs: 11.5px; --fs-xs: 12px; --fs-sm: 13px; --fs: 14px; --fs-md: 15px; --fs-lg: 17.5px; --fs-xl: 24px;
+  --fs-num-sm: 17px; --fs-num: 21px; --fs-num-lg: 28px;
+  --gap: 12px; --panel-pad: 16px; --row-pad: 7px;
+  --control-h: 34px; --control-h-sm: 29px; --control-h-lg: 38px;
+}
+:root[data-density="comfortable"] {
+  --fs-2xs: 12.5px; --fs-xs: 13px; --fs-sm: 14.5px; --fs: 16px; --fs-md: 17px; --fs-lg: 19.5px; --fs-xl: 27px;
+  --fs-num-sm: 19px; --fs-num: 24px; --fs-num-lg: 32px;
+  --lh: 1.56;
+  --gap: 20px; --panel-pad: 24px; --row-pad: 12px;
+  --control-h: 41px; --control-h-sm: 33px; --control-h-lg: 45px;
 }
 
 *, *::before, *::after { box-sizing: border-box; }
@@ -170,3 +192,4 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); width
 :root[data-motion="reduced"] *, :root[data-motion="reduced"] *::before, :root[data-motion="reduced"] *::after { animation-duration: 1ms !important; animation-iteration-count: 1 !important; transition-duration: 1ms !important; }
 
 .noscript { padding: 24px; }
+.sprite { position: absolute; width: 0; height: 0; overflow: hidden; }

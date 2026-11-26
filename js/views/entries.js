@@ -1,13 +1,69 @@
 import { h, icon, debounce, put } from '../utils/dom.js';
 import { formatMoney } from '../utils/money.js';
-import { formatDayHeading, today, formatMonth } from '../utils/dates.js';
+import { formatDayHeading, today, formatMonth, formatDateShort } from '../utils/dates.js';
 import * as repo from '../database/repository.js';
 import { monthItems, expenseValue, NONE } from '../services/finance.js';
 import { fold } from '../services/suggest.js';
 import { openEntryForm } from '../components/entry-form.js';
 import { ui, emitUI, resetEntriesFilter } from '../state.js';
-import { monthNav, pageHead, panel, investRow, txRow, categoryName, blockName, accountName, emptyState, categoryOptions, blockOptions, accountOptions, capitalize } from './common.js';
+import { monthNav, pageHead, panel, investRow, txRow, categoryName, blockName, accountName, emptyState, categoryOptions, blockOptions, accountOptions, capitalize, amountText, kindOf } from './common.js';
 import { openItem, itemMenu, toggleStatus } from './actions.js';
+import { getSectionOptions, setSectionOptions, arrangedList, openArrangeDialog, flushLayout } from '../components/layout.js';
+import { openModal } from '../components/modal.js';
+import { segmented } from '../components/fields.js';
+
+// Colunas da visualização em tabela. Descrição e valor não podem ser ocultados.
+export const ENTRY_COLUMNS = [
+  { id: 'date', label: 'Data' },
+  { id: 'description', label: 'Descrição', locked: true },
+  { id: 'category', label: 'Categoria' },
+  { id: 'block', label: 'Bloco' },
+  { id: 'source', label: 'Fonte' },
+  { id: 'status', label: 'Situação' },
+  { id: 'amount', label: 'Valor', locked: true },
+];
+const FIELD_LABELS = { category: 'Categoria', block: 'Bloco', source: 'Fonte' };
+
+/** Preferências de exibição normalizadas (valores inválidos voltam ao padrão). */
+export function entryViewOptions() {
+  const o = getSectionOptions('entries');
+  const fields = {};
+  for (const k of Object.keys(FIELD_LABELS)) fields[k] = !(o.fields && o.fields[k] === false);
+  return { view: o.view === 'table' ? 'table' : 'list', fields, columns: arrangedList('entries', 'columns', ENTRY_COLUMNS).filter((c) => !c.hidden) };
+}
+
+function openViewOptions(rerender) {
+  const o = entryViewOptions();
+  const seg = segmented({ label: 'Visualização', value: o.view, options: [{ value: 'list', label: 'Lista' }, { value: 'table', label: 'Tabela' }], onChange: (v) => { setSectionOptions('entries', { view: v }); rerender(); } });
+  const checks = Object.entries(FIELD_LABELS).map(([k, l]) => {
+    const cb = h('input', { type: 'checkbox', checked: o.fields[k] });
+    cb.addEventListener('change', () => { setSectionOptions('entries', { fields: { ...entryViewOptions().fields, [k]: cb.checked } }); rerender(); });
+    return h('label', { class: 'row arrange-row' }, cb, h('span', null, l));
+  });
+  const m = openModal({ title: 'Exibição dos lançamentos', size: 'sm', body: h('div', { class: 'stack-lg' },
+    h('div', { class: 'stack' }, h('strong', { class: 'small' }, 'Visualização'), seg),
+    h('div', { class: 'stack' }, h('strong', { class: 'small' }, 'Informações na lista'), ...checks),
+    h('div', { class: 'stack' }, h('strong', { class: 'small' }, 'Colunas da tabela'), h('button', { class: 'btn btn-sm', type: 'button', onclick: () => { m.close(); openArrangeDialog({ section: 'entries', key: 'columns', defs: ENTRY_COLUMNS, title: 'Colunas da tabela', note: 'Descrição e valor ficam sempre visíveis.', onDone: rerender }); } }, 'Organizar colunas…')),
+    h('p', { class: 'faint small' }, 'Filtros e ordenação valem nas duas visualizações; o agrupamento aparece na lista. Só a aparência muda.')),
+  footer: [h('span', { class: 'grow' }), h('button', { class: 'btn btn-primary', type: 'button', onclick: () => { flushLayout(); m.close(); } }, 'Concluir')] });
+}
+
+const CELL = {
+  date: (it) => h('td', { class: 'num nowrap' }, formatDateShort(it.date)),
+  description: (it) => h('td', null, h('span', { class: 'td-desc' }, h('span', { class: 'truncate' }, it.description || '—'), it.installment ? h('span', { class: 'tag' }, `${it.installment.index}/${it.installment.count}`) : null, it.recurrenceId ? h('span', { class: 'tag tag-icon', title: 'Recorrente' }, icon('repeat', 'icon-sm')) : null)),
+  category: (it) => h('td', { class: 'faint' }, it.type === 'transfer' ? '—' : categoryName(it.categoryId)),
+  block: (it) => h('td', { class: 'faint' }, it.blockId ? blockName(it.blockId) : '—'),
+  source: (it) => h('td', { class: 'faint' }, it.type === 'transfer' ? `${accountName(it.sourceId)} → ${accountName(it.toAccountId)}` : accountName(it.sourceId)),
+  status: (it) => h('td', null, h('span', { class: `pill ${it.status === 'done' ? 'pill-done' : it.date < today() && it.type !== 'income' ? 'pill-overdue' : 'pill-planned'}` }, it.status === 'done' ? (it.type === 'income' ? 'Recebido' : 'Realizado') : it.date < today() && it.type !== 'income' ? 'Atrasado' : 'Previsto')),
+  amount: (it) => h('td', { class: `right num strong ${it.type === 'income' ? 'pos' : ''}` }, amountText(it)),
+};
+
+function entriesTable(rows, columns) {
+  return h('div', { class: 'table-wrap' }, h('table', { class: 'table entries-table' },
+    h('thead', null, h('tr', null, ...columns.map((c) => h('th', { class: c.id === 'amount' ? 'right' : '', scope: 'col' }, c.label)))),
+    h('tbody', null, ...rows.map((it) => h('tr', { class: `is-link${it.status === 'planned' ? ' is-planned' : ''}`, tabindex: '0', 'aria-label': `${kindOf(it).label}: ${it.description}, ${amountText(it)}`, onclick: () => openItem(it), onkeydown: (e) => { if (e.key === 'Enter') openItem(it); } },
+      ...columns.map((c) => CELL[c.id](it)))))));
+}
 
 const PAGE = 150;
 let shown = PAGE;
@@ -108,7 +164,10 @@ export function renderEntries(root) {
       active.length ? h('button', { class: 'btn btn-ghost btn-sm', type: 'button', onclick: () => { resetEntriesFilter(); emitUI('filter'); } }, icon('x', 'icon-sm'), 'Limpar filtros') : null),
   );
 
-  const head = pageHead('Lançamentos', { sub: f.scope === 'month' ? 'Movimentações do mês selecionado' : 'Histórico completo de todos os meses', controls: f.scope === 'month' ? monthNav() : null });
+  const vo = entryViewOptions();
+  const rerender = () => renderEntries(root);
+  const head = pageHead('Lançamentos', { sub: f.scope === 'month' ? 'Movimentações do mês selecionado' : 'Histórico completo de todos os meses', controls: f.scope === 'month' ? monthNav() : null,
+    actions: h('button', { class: 'btn btn-sm', type: 'button', title: 'Lista ou tabela, informações e colunas', onclick: () => openViewOptions(rerender) }, icon('sliders', 'icon-sm'), 'Exibição') });
 
   const summary = h('div', { class: 'list-summary small' },
     h('span', null, `${items.length} ${items.length === 1 ? 'lançamento' : 'lançamentos'}`),
@@ -129,7 +188,11 @@ export function renderEntries(root) {
     block: (k) => blockName(k === NONE ? null : k),
     source: (k) => accountName(k === NONE ? null : k),
   }[f.groupBy];
-  if (groupKey) {
+  if (vo.view === 'table') {
+    list.className = '';
+    list.removeAttribute('role');
+    list.append(entriesTable(visible, vo.columns));
+  } else if (groupKey) {
     const groups = new Map();
     for (const it of visible) {
       const k = groupKey(it);
@@ -145,10 +208,10 @@ export function renderEntries(root) {
       if (tt.expense) parts.push(`− ${formatMoney(tt.expense)}`);
       list.append(h('div', { class: 'tx-day' }, h('span', null, capitalize(groupLabel(k))),
         parts.length ? h('span', { class: 'tx-day-total', title: f.groupBy === 'day' ? 'Total do dia' : 'Total do grupo' }, parts.join('  ·  ')) : null));
-      for (const it of rows) list.append(txRow(it, { onOpen: openItem, onMenu: itemMenu, onToggle: toggleStatus, showDate: f.groupBy !== 'day' }));
+      for (const it of rows) list.append(txRow(it, { onOpen: openItem, onMenu: itemMenu, onToggle: toggleStatus, showDate: f.groupBy !== 'day', fields: vo.fields }));
     }
   } else {
-    for (const it of visible) list.append(txRow(it, { onOpen: openItem, onMenu: itemMenu, onToggle: toggleStatus, showDate: true }));
+    for (const it of visible) list.append(txRow(it, { onOpen: openItem, onMenu: itemMenu, onToggle: toggleStatus, showDate: true, fields: vo.fields }));
   }
 
   if (f.type === 'invest') {

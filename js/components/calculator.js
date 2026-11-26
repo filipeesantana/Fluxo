@@ -198,7 +198,7 @@ export function openCalculator(target) {
   if (window.innerWidth > 760) {
     let pos = null;
     try { pos = JSON.parse(localStorage.getItem(POS_KEY)); } catch { /* opcional */ }
-    if (pos) place(panel, pos.left, pos.top);
+    if (pos && Number.isFinite(pos.left) && Number.isFinite(pos.top)) place(panel, pos.left, pos.top);
     else place(panel, window.innerWidth - panel.offsetWidth - 24, window.innerHeight - panel.offsetHeight - 24);
   } else { panel.style.left = panel.style.top = panel.style.right = panel.style.bottom = ''; }
   const t = liveTarget();

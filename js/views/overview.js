@@ -6,23 +6,27 @@ import { summarize, cashPosition, NONE, expenseValue } from '../services/finance
 import { monthInsights, surplusTrend } from '../services/insights.js';
 import { upcoming } from '../services/calendar.js';
 import { investmentValue, simulateGoal } from '../services/investments.js';
-import { barList, dailyChart, lineChart, incomeExpenseChart, progress, autoWidth } from '../components/charts.js';
+import { barList, dailyChart, lineChart, incomeExpenseChart, progress, autoWidth, donutChart, columnsChart, groupTable } from '../components/charts.js';
+import { widgetGrid, isEditing, setEditing } from '../components/layout.js';
+import { openKpiDetail } from './drilldown.js';
+import { backupReminder } from './backup-ui.js';
 import { openModal } from '../components/modal.js';
 import { segmented } from '../components/fields.js';
 import { openEntryForm } from '../components/entry-form.js';
-import { ui, setMonth, setEntriesFilter, resetEntriesFilter, readPref, writePref } from '../state.js';
+import { ui, setMonth, setEntriesFilter, resetEntriesFilter, readChoice } from '../state.js';
 import { monthNav, pageHead, panel, txRow, investRow, categoryName, blockName, accountName, colorOf, emptyState, kv, capitalize } from './common.js';
 import { openItem, itemMenu, toggleStatus } from './actions.js';
 
 const lastKpi = new Map();
 const MONTHS_PT = ['jan', 'fev', 'mar', 'abr', 'mai', 'jun', 'jul', 'ago', 'set', 'out', 'nov', 'dez'];
 
-function kpi(id, { label, value, sub, tone, iconName, hero = false, meta, valueCls = '', title }) {
+function kpi(id, { label, value, sub, tone, iconName, hero = false, meta, valueCls = '', onOpen, cfg = {} }) {
   const changed = lastKpi.has(id) && lastKpi.get(id) !== value;
   lastKpi.set(id, value);
-  return h('div', { class: `kpi kpi-${tone}${hero ? ' is-hero' : ''}${changed ? ' is-updated' : ''}`, dataset: { kpi: id }, title },
-    h('div', { class: 'kpi-top' }, h('span', { class: 'kpi-icon' }, icon(iconName)), h('span', { class: 'kpi-label' }, label)),
-    h('span', { class: `kpi-value num ${valueCls}` }, formatMoney(value)),
+  // O indicador inteiro é um botão: abre o detalhamento do cálculo (drill-down).
+  return h('button', { class: `kpi kpi-${tone}${hero ? ' is-hero' : ''}${changed ? ' is-updated' : ''}${cfg.size === 's' ? ' is-compact' : ''}`, type: 'button', dataset: { kpi: id }, onclick: onOpen, 'aria-label': `${label}: ${formatMoney(value)}. Ver como foi calculado.` },
+    h('span', { class: 'kpi-top' }, h('span', { class: 'kpi-icon' }, icon(iconName)), h('span', { class: 'kpi-label' }, label), h('span', { class: 'kpi-more', 'aria-hidden': 'true' }, icon('chev-right', 'icon-sm'))),
+    h('span', { class: `kpi-value num ${valueCls}` }, value < 0 ? `− ${formatMoney(-value)}` : formatMoney(value)),
     sub ? h('span', { class: 'kpi-sub' }, sub) : null,
     meta || null);
 }
@@ -83,13 +87,15 @@ export function openGroupPanel(field, key, month = ui.month) {
   });
 }
 
-function evolutionPanel(s, m, ctx, isCurrent) {
-  const mode = readPref('evo', 'day');
-  const frac = window.innerWidth > 1100 ? 0.68 : 1;
+function evolutionPanel(s, m, ctx, isCurrent, cfg = {}, api) {
+  const mode = ['day', 'cum', 'ie'].includes(cfg.chart) ? cfg.chart : 'day';
+  const span = { l: 0.5, xl: 0.68, f: 1 }[cfg.size] || 0.68;
+  const frac = window.innerWidth > 1100 ? span : 1;
   const body = h('div');
   const todayIdx = isCurrent ? parseISO(today()).d - 1 : null;
   const draw = (md) => {
-    writePref('evo', md);
+    if (md !== mode || cfg.chart !== md) api?.update({ chart: md });
+    cfg.chart = md;
     if (md === 'day') put(body, dailyChart(s.days, { width: autoWidth(frac), todayDay: todayIdx != null ? todayIdx + 1 : null, onSelectDay: (d) => document.querySelector(`[data-day="${m}-${String(d).padStart(2, '0')}"]`)?.scrollIntoView({ behavior: 'smooth', block: 'center' }) }));
     else if (md === 'cum') {
       const cum = (days) => { let a = 0; return days.map((d) => (a += d.done + d.planned)); };
@@ -108,7 +114,8 @@ function evolutionPanel(s, m, ctx, isCurrent) {
   };
   const seg = segmented({ label: 'Visualização', value: mode, size: 'segmented-sm', options: [{ value: 'day', label: 'Por dia' }, { value: 'cum', label: 'Acumulado' }, { value: 'ie', label: 'Receitas × despesas' }], onChange: draw });
   draw(mode);
-  return panel('Evolução', { hint: `${formatMoney(s.expenseTotal)} em despesas`, actions: seg }, body);
+  const hint = mode === 'ie' ? 'últimos meses, realizado e previsto' : `${formatMoney(s.expenseTotal)} em despesas · ${capitalize(formatMonthShort(m))}`;
+  return panel('Evolução', { hint, actions: seg }, body);
 }
 
 function upcomingPanel(ctx) {
@@ -137,6 +144,144 @@ function upcomingPanel(ctx) {
     rows.length ? h('div', { class: 'upcoming' }, ...rows) : h('div', { class: 'empty-block' }, 'Nada vence nos próximos 30 dias.', h('button', { class: 'btn btn-sm', type: 'button', onclick: () => openEntryForm({ defaults: { status: 'planned' } }) }, icon('plus', 'icon-sm'), 'Programar uma despesa')));
 }
 
+// ——— Componentes da Visão geral ———
+// Cada componente é independente: falha de um não derruba os outros (ver layout.js).
+
+function distWidget(title, hint, groups, field, labelOf, emptyText, emptyAction) {
+  return (cfg) => {
+    const hasNeg = groups.some((g) => g.total < 0);
+    // Rosca não representa valores negativos: cai para barras e avisa.
+    const chart = cfg.chart === 'donut' && hasNeg ? 'bars' : cfg.chart;
+    const onSelect = (k) => openGroupPanel(field, k);
+    const total = groups.reduce((t, g) => t + g.total, 0);
+    const opts = { id: field, labelOf, colorOf, onSelect, total };
+    let body;
+    if (!groups.length) body = h('div', { class: 'empty-block' }, emptyText, emptyAction || null);
+    else if (chart === 'donut') body = donutChart(groups, { ...opts, centerLabel: 'em despesas' });
+    else if (chart === 'columns') body = columnsChart(groups, { ...opts, frac: cfg.size === 'f' ? 1 : cfg.size === 'xl' ? 0.66 : cfg.size === 'l' ? 0.5 : 0.33 });
+    else if (chart === 'table') body = groupTable(groups, opts);
+    else body = barList(groups, { ...opts, empty: emptyText, emptyAction });
+    return panel(title, { hint: groups.length ? `${formatMoney(total)} · ${hint}` : hint },
+      body, cfg.chart === 'donut' && hasNeg ? h('p', { class: 'faint xsmall' }, 'Há valores negativos (estornos maiores que os gastos); a rosca foi trocada por barras.') : null);
+  };
+}
+
+function movementsWidget(s, m, isFuture) {
+  return () => {
+    const items = [...s.items].sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : (b.createdAt || 0) - (a.createdAt || 0)));
+    const invEvents = repo.list('investmentEvents').filter((e) => e.type !== 'balance' && monthOf(e.date) === m);
+    const LIMIT = 14;
+    const list = h('div', { class: 'tx-list', role: 'list' });
+    let lastDate = null;
+    const merged = [...items.map((it) => ({ date: it.date, it })), ...invEvents.map((e) => ({ date: e.date, ev: e }))].sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0)).slice(0, LIMIT);
+    for (const row of merged) {
+      if (row.date !== lastDate) {
+        lastDate = row.date;
+        const dayTotal = items.filter((x) => x.date === row.date).reduce((t, x) => t + expenseValue(x), 0);
+        list.append(h('div', { class: 'tx-day', dataset: { day: row.date } }, h('span', null, formatDateShort(row.date)), dayTotal ? h('span', { class: 'tx-day-total' }, `− ${formatMoney(dayTotal)}`) : null));
+      }
+      list.append(row.ev ? investRow(row.ev) : txRow(row.it, { onOpen: openItem, onMenu: itemMenu, onToggle: toggleStatus }));
+    }
+    const total = items.length + invEvents.length;
+    return panel('Movimentações', { hint: `${total} no mês`, actions: h('a', { class: 'btn btn-sm', href: '#/lancamentos', onclick: () => { resetEntriesFilter(); ui.entries.scope = 'month'; } }, 'Ver todas', icon('arrow-right', 'icon-sm')) },
+      total ? list : h('div', { class: 'empty-block' }, isFuture ? 'Nenhum compromisso registrado para este mês.' : 'Nenhuma movimentação neste mês.',
+        h('button', { class: 'btn btn-sm btn-primary', type: 'button', onclick: () => openEntryForm() }, icon('plus', 'icon-sm'), 'Novo lançamento')),
+      total > LIMIT ? h('a', { class: 'link-btn small more-link', href: '#/lancamentos' }, `Ver os outros ${total - LIMIT} em Lançamentos`) : null);
+  };
+}
+
+function goalsWidget() {
+  const goals = repo.list('goals').filter((g) => !g.archived);
+  if (!goals.length) return h('div', { class: 'empty-block' }, 'Nenhuma meta ativa.', h('a', { class: 'btn btn-sm', href: '#/investimentos' }, 'Criar meta'));
+  const events = repo.list('investmentEvents');
+  const t = today();
+  return panel('Metas', { actions: h('a', { class: 'btn btn-ghost btn-sm', href: '#/investimentos' }, 'Abrir') }, h('div', { class: 'budgets' }, ...goals.slice(0, 5).map((g) => {
+    const inv = g.investmentId ? repo.get('investments', g.investmentId) : null;
+    const current = inv ? investmentValue(inv, events, t).informed : g.initial || 0;
+    const ratio = g.target ? current / g.target : 0;
+    return h('div', { class: 'budget' }, h('div', { class: 'budget-top' }, h('span', { class: 'truncate' }, g.name), h('span', { class: 'num small faint' }, formatPercent(Math.min(1, ratio) * 100, 0))),
+      progress(ratio, { tone: 'invest', label: `${g.name}: ${formatPercent(ratio * 100, 0)}` }),
+      h('div', { class: 'faint xsmall num' }, `${formatMoney(current)} de ${formatMoney(g.target)}`));
+  })));
+}
+
+export function overviewRegistry({ ctx, s, m, isCurrent, isFuture, cash, empty }) {
+  const billsOpen = s.cardBills.reduce((t, b) => t + b.open, 0);
+  const pendingSub = [billsOpen ? `${formatMoney(billsOpen)} em faturas` : null, s.overdue ? `${formatMoney(s.overdue)} atrasados` : null].filter(Boolean).join(' · ') || 'previstos e faturas em aberto';
+  const receivedRatio = s.incomeTotal > 0 ? s.incomeReceived / s.incomeTotal : null;
+  const paidRatio = s.expenseTotal > 0 ? s.expenseDone / s.expenseTotal : null;
+  const ratioBar = (r, color) => r == null ? null : h('span', { class: 'kpi-bar', style: { color } }, h('span', { style: { width: `${Math.round(Math.min(1, r) * 100)}%` } }));
+  const accounts = repo.list('accounts').filter((a) => !a.archived && a.kind !== 'credit');
+  const firstAction = empty ? h('button', { class: 'btn btn-sm btn-primary', type: 'button', onclick: () => openEntryForm() }, icon('plus', 'icon-sm'), 'Registrar o primeiro gasto') : null;
+  const DIST = { charts: ['bars', 'columns', 'donut', 'table'], chart: 'bars', sizes: ['m', 'l', 'xl', 'f'], color: false };
+  const KPI = { sizes: ['s', 'm', 'l'], color: true, locked: false };
+  const kpiOpen = (kind) => () => openKpiDetail(kind, m);
+
+  return {
+    'kpi-surplus': { ...KPI, title: 'Sobra projetada', description: 'Receitas do mês menos todas as despesas.', size: 'l',
+      render: (cfg) => kpi('surplus', { label: 'Sobra projetada', value: s.projectedSurplus, tone: s.projectedSurplus < 0 ? 'neg' : 'accent', iconName: 'chart', hero: true, valueCls: s.projectedSurplus < 0 ? 'neg-value' : '', onOpen: kpiOpen('surplus'),
+        sub: s.projectedSurplus < 0 ? 'Déficit: as despesas do mês superam as receitas.' : 'Receitas do mês menos todas as despesas, pagas e previstas.',
+        meta: h('span', { class: 'kpi-meta' }, h('span', null, 'Até agora: ', h('strong', { class: 'num' }, formatMoney(s.currentSurplus))), s.safetyMargin ? h('span', null, `Margem: ${formatMoney(s.safetyMargin)}`) : null), cfg }) },
+    'kpi-invest': { ...KPI, title: 'Disponível para investir', description: 'Sobra livre após margem e aportes do mês.', size: 'l',
+      render: (cfg) => kpi('invest', { label: 'Disponível para investir', value: s.availableToInvest, tone: 'invest', iconName: 'trend', hero: true, onOpen: kpiOpen('invest'),
+        sub: 'Sobra livre (sem benefícios restritos), após margem e aportes já feitos. Nada é investido automaticamente.',
+        meta: h('span', { class: 'kpi-meta' }, h('span', null, 'Aportado no mês: ', h('strong', { class: 'num' }, formatMoney(s.contributed)))), cfg }) },
+    'kpi-income-received': { ...KPI, title: 'Receitas recebidas', size: 's',
+      render: (cfg) => kpi('inRec', { label: 'Receitas recebidas', value: s.incomeReceived, tone: 'pos', iconName: 'in', onOpen: kpiOpen('incomeReceived'), sub: s.incomeTotal ? `de ${formatMoney(s.incomeTotal)} no mês${s.restrictedIncome ? ` · ${formatMoney(s.restrictedIncome)} em benefícios` : ''}` : 'nenhuma receita no mês', meta: ratioBar(receivedRatio, 'var(--pos)'), cfg }) },
+    'kpi-income-expected': { ...KPI, title: 'Receitas previstas', size: 's',
+      render: (cfg) => kpi('inExp', { label: 'Receitas previstas', value: s.incomeExpected, tone: 'plan', iconName: 'clock', onOpen: kpiOpen('incomeExpected'), sub: s.incomeExpected ? 'a receber neste mês' : 'nada a receber', cfg }) },
+    'kpi-expense-done': { ...KPI, title: 'Despesas realizadas', size: 's',
+      render: (cfg) => kpi('exDone', { label: 'Despesas realizadas', value: s.expenseDone, tone: 'neg', iconName: 'out', onOpen: kpiOpen('expenseDone'), sub: paidRatio != null ? `${formatPercent(paidRatio * 100, 0)} das despesas do mês` : 'nenhuma despesa paga', meta: ratioBar(paidRatio, 'var(--neg)'), cfg }) },
+    'kpi-expense-pending': { ...KPI, title: 'Compromissos pendentes', size: 's',
+      render: (cfg) => kpi('exPend', { label: 'Compromissos pendentes', value: s.expensePending, tone: 'warn', iconName: 'alert', onOpen: kpiOpen('expensePending'), sub: pendingSub, cfg }) },
+    insights: { title: 'Leituras do mês', description: 'Comparações com o mês anterior e metas.', size: 'f', sizes: ['l', 'xl', 'f'], render: () => insightsStrip(ctx, m, topGoal()) },
+    'dist-category': { ...DIST, title: 'Por categoria', description: 'Natureza do gasto.', size: 'm', render: distWidget('Por categoria', 'natureza do gasto', s.byCategory, 'categoryId', categoryName, 'Sem gastos neste mês.', firstAction) },
+    'dist-block': { ...DIST, title: 'Por bloco', description: 'Contexto: pessoal, casa, moto…', size: 'm', render: distWidget('Por bloco', 'contexto', s.byBlock, 'blockId', blockName, 'Sem gastos neste mês. Blocos agrupam por contexto: pessoal, casa, moto…') },
+    'dist-source': { ...DIST, title: 'Por fonte', description: 'Conta ou cartão usado.', size: 'm', render: distWidget('Por fonte', 'conta ou cartão', s.bySource, 'sourceId', accountName, 'Sem gastos neste mês.') },
+    evolution: { title: 'Evolução', description: 'Gastos por dia, acumulado ou receitas × despesas.', size: 'xl', sizes: ['l', 'xl', 'f'], charts: ['day', 'cum', 'ie'], chart: readChoice('evo', ['day', 'cum', 'ie'], 'day'),
+      render: (cfg, api) => evolutionPanel(s, m, ctx, isCurrent, cfg, api) },
+    upcoming: { title: 'Próximos vencimentos', description: 'O que vence nos próximos 30 dias.', size: 'm', sizes: ['m', 'l', 'xl', 'f'], when: () => isCurrent || isFuture, render: () => (isCurrent || isFuture ? upcomingPanel(ctx) : h('div', { class: 'empty-block' }, 'Disponível no mês atual e nos próximos.')) },
+    movements: { title: 'Movimentações', description: 'Lançamentos e aportes do mês.', size: 'xl', sizes: ['l', 'xl', 'f'], render: movementsWidget(s, m, isFuture) },
+    'surplus-detail': { title: 'Sobra em detalhe', description: 'Da sobra orçamentária ao disponível para aportes.', size: 'm', sizes: ['m', 'l', 'xl'],
+      render: () => panel('Sobra em detalhe', { actions: h('button', { class: 'btn btn-ghost btn-sm', type: 'button', onclick: kpiOpen('invest') }, 'Ver cálculo') }, h('div', { class: 'kvs' },
+        kv('Sobra orçamentária do mês', formatMoney(s.projectedSurplus), { cls: s.projectedSurplus < 0 ? 'neg' : 'kv-strong' }),
+        kv('Sobra até agora', formatMoney(s.currentSurplus), { hint: 'recebido − pago' }),
+        isCurrent ? kv('Saldo em contas hoje', ctx.complete ? formatMoney(cash.free) : 'carregando…', { hint: 'caixa real' }) : null,
+        isCurrent ? kv('Caixa após compromissos', ctx.complete ? formatMoney(cash.free + s.incomeExpected - s.expensePending) : 'carregando…', { hint: 'fim do mês' }) : null,
+        s.restrictedIncome || s.restrictedExpense ? kv('Benefícios livres', formatMoney(s.restrictedLeft), { hint: 'não entram em aportes' }) : null,
+        s.safetyMargin ? kv('Margem de segurança', `− ${formatMoney(s.safetyMargin)}`) : null,
+        kv('Aportes realizados', formatMoney(s.contributed), { cls: s.contributed ? 'invest' : '' }),
+        kv('Disponível para aportes', formatMoney(s.availableToInvest), { cls: 'invest' }),
+        s.goalsPlanned ? kv('Planejado para metas', formatMoney(s.goalsPlanned), { hint: s.availableToInvest >= s.goalsPlanned ? 'coberto' : 'acima do disponível', cls: s.availableToInvest >= s.goalsPlanned ? '' : 'warn' }) : null)) },
+    balances: { title: 'Saldos', description: 'Saldo realizado por conta (mês atual).', size: 'm', sizes: ['m', 'l', 'xl'], when: () => accounts.length > 0 && isCurrent && ctx.complete,
+      render: () => (accounts.length && isCurrent ? panel('Saldos', { hint: 'somente realizados' }, h('div', { class: 'kvs' }, ...accounts.map((a) => kv(a.name, ctx.complete ? formatMoney(cash.balances.get(a.id) || 0) : '…', { cls: (cash.balances.get(a.id) || 0) < 0 ? 'neg' : '' })))) : h('div', { class: 'empty-block' }, 'Os saldos aparecem no mês atual, quando houver contas.')) },
+    bills: { title: 'Faturas', description: 'Faturas de cartão do mês.', size: 'm', sizes: ['m', 'l', 'xl'], when: () => s.cardBills.length > 0, render: () => billsPanel(s, m) },
+    budgets: { title: 'Orçamentos', description: 'Uso dos limites do mês.', size: 'm', sizes: ['m', 'l', 'xl'], when: () => s.budgets.length > 0,
+      render: () => panel('Orçamentos', { actions: h('a', { class: 'btn btn-ghost btn-sm', href: '#/planejamento/orcamentos' }, 'Gerenciar') },
+        s.budgets.length ? h('div', { class: 'budgets' }, ...[...s.budgets].sort((a, b) => b.ratio - a.ratio).slice(0, 5).map((b) => budgetRow(b))) : h('div', { class: 'empty-block' }, 'Nenhum orçamento definido.')) },
+    goals: { title: 'Metas', description: 'Progresso das metas ativas.', size: 'm', sizes: ['m', 'l', 'xl'], hidden: true, render: goalsWidget },
+  };
+}
+
+function billsPanel(s, m) {
+  if (!s.cardBills.length) return h('div', { class: 'empty-block' }, 'Nenhuma fatura neste mês.');
+  const label = { paid: 'paga', open: 'aberta', partial: 'parcial', overdue: 'vencida' };
+  return panel(`Faturas de ${formatMonthShort(m)}`, null, h('div', { class: 'kvs' }, ...s.cardBills.map((b) => {
+    const card = repo.get('accounts', b.cardId);
+    const row = h('div', { class: 'kv' },
+      h('span', { class: 'kv-label' }, card?.name || 'Cartão', h('span', { class: 'faint' }, b.dueDate ? ` · vence ${formatDateShort(b.dueDate)}` : ' · sem vencimento configurado')),
+      h('span', { class: 'kv-value num' }, formatMoney(b.total), h('span', { class: `pill pill-${b.status}` }, label[b.status])));
+    if (b.open > 0 && card) row.append(h('div', { class: 'kv-action' }, h('button', { class: 'btn btn-sm', type: 'button', onclick: () => openEntryForm({ defaults: { type: 'transfer', toAccountId: card.id, billMonth: m, amount: b.open, date: today(), status: 'done', sourceId: card.payAccountId || null } }) }, icon('check', 'icon-sm'), `Pagar ${formatMoney(b.open)}`)));
+    return row;
+  })));
+}
+
+export function customizeButton(section, rerender) {
+  const on = isEditing(section);
+  return h('button', { class: `btn${on ? ' btn-primary' : ''}`, type: 'button', 'aria-pressed': on ? 'true' : 'false', title: 'Reorganizar, redimensionar e escolher componentes desta tela',
+    onclick: () => { setEditing(section, !on); rerender(); } }, icon('sliders', 'icon-sm'), on ? 'Concluir' : 'Personalizar');
+}
+
 export function renderOverview(root) {
   const ctx = repo.context();
   const m = ui.month;
@@ -146,92 +291,10 @@ export function renderOverview(root) {
   const isFuture = monthDiff(cm, m) > 0;
   const cash = cashPosition(ctx);
   const empty = repo.list('transactions').length === 0 && repo.list('recurrences').length === 0;
-
-  const head = pageHead('Visão geral', { sub: isFuture ? 'Projeção com base nos compromissos cadastrados' : isCurrent ? `Resumo de ${formatMonth(m)}` : `Histórico de ${formatMonth(m)}`, controls: monthNav() });
-
-  const billsOpen = s.cardBills.reduce((t, b) => t + b.open, 0);
-  const pendingSub = [billsOpen ? `${formatMoney(billsOpen)} em faturas` : null, s.overdue ? `${formatMoney(s.overdue)} atrasados` : null].filter(Boolean).join(' · ') || 'previstos e faturas em aberto';
-  const receivedRatio = s.incomeTotal > 0 ? s.incomeReceived / s.incomeTotal : null;
-  const paidRatio = s.expenseTotal > 0 ? s.expenseDone / s.expenseTotal : null;
-  const ratioBar = (r, color) => r == null ? null : h('div', { class: 'kpi-bar', style: { color } }, h('span', { style: { width: `${Math.round(Math.min(1, r) * 100)}%` } }));
-
-  const kpis = h('div', { class: 'kpi-grid', role: 'group', 'aria-label': 'Indicadores do mês' },
-    kpi('surplus', { label: 'Sobra projetada', value: s.projectedSurplus, tone: s.projectedSurplus < 0 ? 'neg' : 'accent', iconName: 'chart', hero: true, valueCls: s.projectedSurplus < 0 ? 'neg-value' : '',
-      sub: 'Receitas do mês menos todas as despesas, pagas e previstas.',
-      meta: h('div', { class: 'kpi-meta' }, h('span', null, 'Até agora: ', h('strong', { class: 'num' }, formatMoney(s.currentSurplus))), s.safetyMargin ? h('span', null, `Margem: ${formatMoney(s.safetyMargin)}`) : null) }),
-    kpi('invest', { label: 'Disponível para investir', value: s.availableToInvest, tone: 'invest', iconName: 'trend', hero: true,
-      sub: 'Sobra livre (sem benefícios restritos), após margem e aportes já feitos. Nada é investido automaticamente.',
-      meta: h('div', { class: 'kpi-meta' }, h('span', null, 'Aportado no mês: ', h('strong', { class: 'num' }, formatMoney(s.contributed))), s.availableToInvest > 0 ? h('a', { class: 'link-btn', href: '#/investimentos' }, 'Simular aporte', icon('arrow-right', 'icon-sm')) : null) }),
-    kpi('inRec', { label: 'Receitas recebidas', value: s.incomeReceived, tone: 'pos', iconName: 'in', sub: s.incomeTotal ? `de ${formatMoney(s.incomeTotal)} no mês${s.restrictedIncome ? ` · ${formatMoney(s.restrictedIncome)} em benefícios` : ''}` : 'nenhuma receita no mês', meta: ratioBar(receivedRatio, 'var(--pos)') }),
-    kpi('inExp', { label: 'Receitas previstas', value: s.incomeExpected, tone: 'plan', iconName: 'clock', sub: s.incomeExpected ? 'a receber neste mês' : 'nada a receber' }),
-    kpi('exDone', { label: 'Despesas realizadas', value: s.expenseDone, tone: 'neg', iconName: 'out', sub: paidRatio != null ? `${formatPercent(paidRatio * 100, 0)} das despesas do mês` : 'nenhuma despesa paga', meta: ratioBar(paidRatio, 'var(--neg)') }),
-    kpi('exPend', { label: 'Compromissos pendentes', value: s.expensePending, tone: 'warn', iconName: 'alert', sub: pendingSub }),
-  );
-
-  const g = topGoal();
-  const dist = h('div', { class: 'grid grid-3' },
-    panel('Por categoria', { hint: 'natureza do gasto' }, barList(s.byCategory, { id: 'cat', labelOf: categoryName, colorOf, onSelect: (k) => openGroupPanel('categoryId', k), empty: 'Sem gastos neste mês.', emptyAction: empty ? h('button', { class: 'btn btn-sm btn-primary', type: 'button', onclick: () => openEntryForm() }, icon('plus', 'icon-sm'), 'Registrar o primeiro gasto') : null })),
-    panel('Por bloco', { hint: 'contexto' }, barList(s.byBlock, { id: 'block', labelOf: blockName, colorOf, onSelect: (k) => openGroupPanel('blockId', k), empty: 'Sem gastos neste mês. Blocos agrupam por contexto: pessoal, casa, moto…' })),
-    panel('Por fonte', { hint: 'conta ou cartão' }, barList(s.bySource, { id: 'src', labelOf: accountName, colorOf, onSelect: (k) => openGroupPanel('sourceId', k), empty: 'Sem gastos neste mês.' })),
-  );
-
-  // Movimentações do mês (inclui aportes/resgates, que não são consumo)
-  const items = [...s.items].sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : (b.createdAt || 0) - (a.createdAt || 0)));
-  const invEvents = repo.list('investmentEvents').filter((e) => e.type !== 'balance' && monthOf(e.date) === m);
-  const LIMIT = 14;
-  const list = h('div', { class: 'tx-list', role: 'list' });
-  let lastDate = null;
-  const merged = [...items.map((it) => ({ date: it.date, it })), ...invEvents.map((e) => ({ date: e.date, ev: e }))].sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0)).slice(0, LIMIT);
-  for (const row of merged) {
-    if (row.date !== lastDate) {
-      lastDate = row.date;
-      const dayTotal = items.filter((x) => x.date === row.date).reduce((t, x) => t + expenseValue(x), 0);
-      list.append(h('div', { class: 'tx-day', dataset: { day: row.date } }, h('span', null, formatDateShort(row.date)), dayTotal ? h('span', { class: 'tx-day-total' }, `− ${formatMoney(dayTotal)}`) : null));
-    }
-    list.append(row.ev ? investRow(row.ev) : txRow(row.it, { onOpen: openItem, onMenu: itemMenu, onToggle: toggleStatus }));
-  }
-  const total = items.length + invEvents.length;
-  const movements = panel('Movimentações', { hint: `${total} no mês`, actions: h('a', { class: 'btn btn-sm', href: '#/lancamentos', onclick: () => { resetEntriesFilter(); ui.entries.scope = 'month'; } }, 'Ver todas', icon('arrow-right', 'icon-sm')) },
-    total ? list : h('div', { class: 'empty-block' }, isFuture ? 'Nenhum compromisso registrado para este mês.' : 'Nenhuma movimentação neste mês.',
-      h('button', { class: 'btn btn-sm btn-primary', type: 'button', onclick: () => openEntryForm() }, icon('plus', 'icon-sm'), 'Novo lançamento')),
-    total > LIMIT ? h('a', { class: 'link-btn small', href: '#/lancamentos', style: { marginTop: '10px' } }, `Ver os outros ${total - LIMIT} em Lançamentos`) : null);
-
-  // Coluna lateral
-  const side = h('div', { class: 'col' });
-  if (isCurrent || isFuture) side.append(upcomingPanel(ctx));
-  side.append(panel('Sobra em detalhe', null, h('div', { class: 'kvs' },
-    kv('Sobra orçamentária do mês', formatMoney(s.projectedSurplus), { cls: s.projectedSurplus < 0 ? 'neg' : 'kv-strong' }),
-    kv('Sobra até agora', formatMoney(s.currentSurplus), { hint: 'recebido − pago' }),
-    isCurrent ? kv('Saldo em contas hoje', ctx.complete ? formatMoney(cash.free) : 'carregando…', { hint: 'caixa real' }) : null,
-    isCurrent ? kv('Caixa após compromissos', ctx.complete ? formatMoney(cash.free + s.incomeExpected - s.expensePending) : 'carregando…', { hint: 'fim do mês' }) : null,
-    s.restrictedIncome || s.restrictedExpense ? kv('Benefícios livres', formatMoney(s.restrictedLeft), { hint: 'não entram em aportes' }) : null,
-    s.safetyMargin ? kv('Margem de segurança', `− ${formatMoney(s.safetyMargin)}`) : null,
-    kv('Aportes realizados', formatMoney(s.contributed), { cls: s.contributed ? 'invest' : '' }),
-    kv('Disponível para aportes', formatMoney(s.availableToInvest), { cls: 'invest' }),
-    s.goalsPlanned ? kv('Planejado para metas', formatMoney(s.goalsPlanned), { hint: s.availableToInvest >= s.goalsPlanned ? 'coberto' : 'acima do disponível', cls: s.availableToInvest >= s.goalsPlanned ? '' : 'warn' }) : null)));
-
-  const accounts = repo.list('accounts').filter((a) => !a.archived && a.kind !== 'credit');
-  if (accounts.length && isCurrent && ctx.complete) {
-    side.append(panel('Saldos', { hint: 'somente realizados' }, h('div', { class: 'kvs' }, ...accounts.map((a) => kv(a.name, formatMoney(cash.balances.get(a.id) || 0), { cls: (cash.balances.get(a.id) || 0) < 0 ? 'neg' : '' })))));
-  }
-  if (s.cardBills.length) {
-    const label = { paid: 'paga', open: 'aberta', partial: 'parcial', overdue: 'vencida' };
-    side.append(panel(`Faturas de ${formatMonthShort(m)}`, null, h('div', { class: 'kvs' }, ...s.cardBills.map((b) => {
-      const card = repo.get('accounts', b.cardId);
-      const row = h('div', { class: 'kv' },
-        h('span', { class: 'kv-label' }, card?.name || 'Cartão', h('span', { class: 'faint' }, b.dueDate ? ` · vence ${formatDateShort(b.dueDate)}` : ' · sem vencimento configurado')),
-        h('span', { class: 'kv-value num' }, formatMoney(b.total), h('span', { class: `pill pill-${b.status}` }, label[b.status])));
-      if (b.open > 0 && card) row.append(h('div', { class: 'kv-action' }, h('button', { class: 'btn btn-sm', type: 'button', onclick: () => openEntryForm({ defaults: { type: 'transfer', toAccountId: card.id, billMonth: m, amount: b.open, date: today(), status: 'done', sourceId: card.payAccountId || null } }) }, icon('check', 'icon-sm'), `Pagar ${formatMoney(b.open)}`)));
-      return row;
-    }))));
-  }
-  if (s.budgets.length) {
-    side.append(panel('Orçamentos', { actions: h('a', { class: 'btn btn-ghost btn-sm', href: '#/planejamento/orcamentos' }, 'Gerenciar') },
-      h('div', { class: 'budgets' }, ...[...s.budgets].sort((a, b) => b.ratio - a.ratio).slice(0, 5).map((b) => budgetRow(b)))));
-  }
-
-  put(root, head, kpis, h('div', { style: { marginTop: 'var(--gap)' } }, insightsStrip(ctx, m, g)), dist,
-    h('div', { class: 'grid grid-main' }, h('div', { class: 'col' }, evolutionPanel(s, m, ctx, isCurrent), movements), side));
+  const rerender = () => renderOverview(root);
+  const head = pageHead('Visão geral', { sub: isFuture ? 'Projeção com base nos compromissos cadastrados' : isCurrent ? `Resumo de ${formatMonth(m)}` : `Histórico de ${formatMonth(m)}`, controls: monthNav(), actions: customizeButton('overview', rerender) });
+  const registry = overviewRegistry({ ctx, s, m, isCurrent, isFuture, cash, empty });
+  put(root, head, backupReminder(), widgetGrid({ section: 'overview', registry, rerender }));
 }
 
 export function budgetRow(b) {

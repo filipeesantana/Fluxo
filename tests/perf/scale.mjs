@@ -22,7 +22,7 @@ for (const N of SIZES) {
   const errors = [];
   p.on('pageerror', (e) => errors.push(e.message));
   await p.goto(url);
-  await p.waitForSelector('.kpi-grid');
+  await p.waitForSelector('[data-kpi]');
   // Base sintética: 5 anos de movimentações, contas, cartão, recorrências e parcelas.
   await p.evaluate(async (N) => {
     const db = await import('./js/database/db.js');
@@ -61,11 +61,27 @@ for (const N of SIZES) {
   t = Date.now(); await p.goto(`${url}#/planejamento/projecao`); await p.waitForSelector('.horizon');
   await p.locator('.horizon .seg', { hasText: '5 anos' }).click(); await p.waitForFunction(() => document.querySelectorAll('.table tbody tr').length === 60); r.projection60Ms = Date.now() - t;
   t = Date.now(); await p.goto(`${url}#/planejamento/calendario`); await p.waitForSelector('.cal-grid'); await frame(p); r.calendarMs = Date.now() - t;
-  t = Date.now(); await p.goto(`${url}#/visao-geral`); await p.waitForSelector('.kpi-grid'); await frame(p); r.overviewMs = Date.now() - t;
+  t = Date.now(); await p.goto(`${url}#/visao-geral`); await p.waitForSelector('[data-kpi]'); await frame(p); r.overviewMs = Date.now() - t;
+  // Backup: leitura consistente + serialização + SHA-256; validação completa; restauração atômica (com snapshot).
+  Object.assign(r, await p.evaluate(async () => {
+    const repo = await import('./js/database/repository.js');
+    const bk = await import('./js/services/backup.js');
+    let t = performance.now();
+    const text = JSON.stringify(await bk.buildBackup(await repo.readConsistent()));
+    const exportMs = Math.round(performance.now() - t);
+    t = performance.now();
+    const res = await bk.parseBackupText(text);
+    const validateMs = Math.round(performance.now() - t);
+    if (!res.ok) throw new Error(res.errors.join('; '));
+    t = performance.now();
+    await repo.importData(res.backup.data);
+    const restoreMs = Math.round(performance.now() - t);
+    return { exportMs, validateMs, restoreMs, backupMB: Math.round(text.length / 104857.6) / 10, restoredTx: repo.list('transactions').length };
+  }));
   r.heapMB = await p.evaluate(() => { const m = performance.memory?.usedJSHeapSize; return Number.isFinite(m) ? Math.round(m / 1048576) : null; });
   r.errors = errors.length;
   results.push(r);
-  console.log(`N=${String(N).padStart(6)} · abrir ${r.openMs} ms (histórico completo ${r.fullHistoryMs} ms) · trocar mês ${r.monthNavMs} ms · criar ${r.createMs} ms · editar ${r.editMs} ms · buscar ${r.searchMs} ms · projeção 60m ${r.projection60Ms} ms · calendário ${r.calendarMs} ms · visão geral ${r.overviewMs} ms · heap ${r.heapMB} MB · erros ${r.errors}`);
+  console.log(`N=${String(N).padStart(6)} · abrir ${r.openMs} ms (histórico completo ${r.fullHistoryMs} ms) · trocar mês ${r.monthNavMs} ms · criar ${r.createMs} ms · editar ${r.editMs} ms · buscar ${r.searchMs} ms · projeção 60m ${r.projection60Ms} ms · calendário ${r.calendarMs} ms · visão geral ${r.overviewMs} ms · backup ${r.exportMs} ms (${r.backupMB} MB) · validar ${r.validateMs} ms · restaurar ${r.restoreMs} ms · heap ${r.heapMB} MB · erros ${r.errors}`);
   await context.close();
 }
 await browser.close();

@@ -99,24 +99,24 @@ const sample = () => ({
   meta: [{ key: 'seeded', value: true }],
 });
 
-test('Cenário 8 (lógica): backup exportado é válido e completo', () => {
-  const b = buildBackup(sample());
-  const res = parseBackupText(JSON.stringify(b));
+test('Cenário 8 (lógica): backup exportado é válido e completo', async () => {
+  const b = await buildBackup(sample());
+  const res = await parseBackupText(JSON.stringify(b));
   assert.equal(res.ok, true, res.errors.join());
   assert.equal(res.counts.transactions, 1);
   assert.deepEqual(res.backup.data.transactions[0], sample().transactions[0]);
 });
 
-test('Cenário 9 (lógica): backups inválidos são rejeitados', () => {
-  assert.equal(parseBackupText('{nope').ok, false);
+test('Cenário 9 (lógica): backups inválidos são rejeitados', async () => {
+  assert.equal((await parseBackupText('{nope')).ok, false);
   assert.equal(validateBackup({ format: 'outro' }).ok, false);
-  const future = buildBackup(sample()); future.version = 99;
+  const future = await buildBackup(sample()); future.version = 99;
   assert.equal(validateBackup(future).ok, false);
-  const bad = buildBackup(sample()); bad.data.transactions[0].amount = 12.5;
+  const bad = await buildBackup(sample()); bad.data.transactions[0].amount = 12.5;
   assert.equal(validateBackup(bad).ok, false);
-  const dup = buildBackup(sample()); dup.data.transactions.push({ ...dup.data.transactions[0] });
+  const dup = await buildBackup(sample()); dup.data.transactions.push({ ...dup.data.transactions[0] });
   assert.equal(validateBackup(dup).ok, false);
-  const orphan = buildBackup(sample()); orphan.data.transactions[0].categoryId = 'zzz';
+  const orphan = await buildBackup(sample()); orphan.data.transactions[0].categoryId = 'zzz'; delete orphan.counts;
   const r = validateBackup(orphan);
   assert.equal(r.ok, true);
   assert.equal(r.warnings.length, 1);

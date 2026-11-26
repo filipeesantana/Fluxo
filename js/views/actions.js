@@ -5,9 +5,9 @@ import { toast, toastError } from '../components/toast.js';
 import { openEntryForm } from '../components/entry-form.js';
 import { field, moneyInput, segmented } from '../components/fields.js';
 import * as repo from '../database/repository.js';
-import { today, formatDate, isISODate } from '../utils/dates.js';
+import { today, formatDate, isISODate, addDays } from '../utils/dates.js';
 import { formatMoney } from '../utils/money.js';
-import { FREQUENCIES } from '../services/recurrence.js';
+import { FREQUENCIES, REPEAT_PRESETS } from '../services/recurrence.js';
 import { categoryOptions, blockOptions, accountOptions } from './common.js';
 
 export function openItem(item) {
@@ -32,34 +32,95 @@ export async function toggleStatus(item) {
 export function itemMenu(item, anchor) {
   if (item.virtual) return occurrenceMenu(item, anchor);
   const tx = repo.get('transactions', item.id);
+  if (!tx) return;
   const rule = tx.recurrenceId ? repo.get('recurrences', tx.recurrenceId) : null;
+  const canRepeat = !tx.recurrenceId && !tx.planId && (tx.type === 'expense' || tx.type === 'income');
   openMenu(anchor, [
     { label: 'Editar', icon: 'edit', onSelect: () => openItem(item) },
     { label: tx.status === 'done' ? 'Marcar como previsto' : 'Marcar como realizado', icon: 'check', onSelect: () => toggleStatus(item) },
-    tx.type !== 'transfer' ? { label: 'Duplicar', icon: 'copy', onSelect: () => duplicate(tx) } : null,
-    tx.type === 'expense' ? { label: 'Registrar reembolso/estorno', icon: 'refund', onSelect: () => openEntryForm({ refundOf: tx }) } : null,
-    rule ? { label: 'Editar série a partir daqui', icon: 'repeat', onSelect: () => editSeries(rule, tx.occurrenceDate) } : null,
     'sep',
-    { label: 'Excluir', icon: 'trash', danger: true, onSelect: () => removeTx(tx) },
+    tx.type !== 'transfer' ? { label: 'Registrar novamente hoje', icon: 'plus', onSelect: () => duplicate(tx, { date: today(), status: 'done' }, 'registrado novamente hoje') } : null,
+    tx.type !== 'transfer' ? { label: 'Registrar em outra data…', icon: 'calendar', onSelect: () => registerOnOtherDate(tx) } : null,
+    tx.type !== 'transfer' ? { label: 'Duplicar (mesma data)', icon: 'copy', onSelect: () => duplicate(tx, {}, 'duplicado') } : null,
+    canRepeat ? { label: 'Transformar em recorrente…', icon: 'repeat', onSelect: () => openConvertToRecurring(tx) } : null,
+    tx.type === 'expense' ? { label: 'Registrar reembolso/estorno', icon: 'refund', onSelect: () => openEntryForm({ refundOf: tx }) } : null,
+    rule ? 'sep' : null,
+    rule ? { label: 'Editar série a partir daqui', icon: 'repeat', onSelect: () => editSeries(rule, tx.occurrenceDate) } : null,
+    rule ? (repo.isRulePaused(rule) ? { label: 'Retomar série', icon: 'repeat', onSelect: () => resumeSeries(rule) } : { label: 'Pausar série a partir daqui', icon: 'clock', onSelect: () => pauseSeries(rule, addDays(tx.occurrenceDate, 1)) }) : null,
+    'sep',
+    { label: 'Excluir…', icon: 'trash', danger: true, onSelect: () => removeTx(tx) },
   ]);
 }
 
 function occurrenceMenu(item, anchor) {
   const rule = repo.get('recurrences', item.recurrenceId);
+  if (!rule) return;
   openMenu(anchor, [
     { label: item.type === 'income' ? 'Marcar como recebido' : 'Marcar como pago', icon: 'check', onSelect: () => toggleStatus(item) },
     { label: 'Editar só esta ocorrência', icon: 'edit', onSelect: () => openItem(item) },
-    { label: 'Editar série a partir daqui', icon: 'repeat', onSelect: () => editSeries(rule, item.occurrenceDate) },
+    { label: 'Editar esta e as próximas', icon: 'repeat', onSelect: () => editSeries(rule, item.occurrenceDate) },
     { label: 'Ignorar esta ocorrência', icon: 'x', onSelect: () => skip(item) },
+    { label: 'Pausar série a partir daqui', icon: 'clock', onSelect: () => pauseSeries(rule, item.occurrenceDate) },
     'sep',
     { label: 'Encerrar série a partir daqui', icon: 'trash', danger: true, onSelect: () => endSeries(rule, item.occurrenceDate) },
   ]);
 }
 
-async function duplicate(tx) {
+/** Pergunta o escopo de uma alteração em ocorrência recorrente. */
+export function askScope({ title, verb = 'Aplicar', allowAll = true }) {
+  return new Promise((resolve) => {
+    let choice = null;
+    const opt = (value, label, desc) => h('button', { class: 'scope-opt', type: 'button', onclick: () => { choice = value; m.close(); } }, h('strong', null, label), h('span', { class: 'faint small' }, desc));
+    const m = openModal({ title, size: 'sm', body: h('div', { class: 'scope-list' },
+      opt('one', 'Apenas esta ocorrência', 'As demais continuam como estão.'),
+      opt('future', 'Esta e as próximas', 'Ocorrências anteriores e já pagas não mudam.'),
+      allowAll ? opt('all', 'Toda a série', 'Inclui as futuras; lançamentos já realizados são preservados.') : null),
+    footer: [h('span', { class: 'grow' }), h('button', { class: 'btn', type: 'button', onclick: () => m.close() }, 'Cancelar')], onClose: () => resolve(choice) });
+    void verb;
+  });
+}
+
+async function pauseSeries(rule, fromDate) {
   try {
-    const copy = await repo.duplicateTransaction(tx.id, { date: today(), status: 'done' });
-    toast('Lançamento duplicado para hoje', { action: { label: 'Editar', fn: () => openEntryForm({ tx: repo.get('transactions', copy.id) }) } });
+    await repo.pauseRecurrence(rule.id, fromDate);
+    toast(`“${rule.description}” pausada a partir de ${formatDate(fromDate)}`, { tone: 'success', action: { label: 'Retomar', fn: () => resumeSeries(repo.get('recurrences', rule.id)) } });
+  } catch (err) { toastError(err); }
+}
+
+async function resumeSeries(rule) {
+  try { await repo.resumeRecurrence(rule.id, today()); toast(`“${rule.description}” retomada a partir de hoje`, { tone: 'success' }); } catch (err) { toastError(err); }
+}
+
+function registerOnOtherDate(tx) {
+  const { id, recurrenceId, occurrenceDate, planId, installment, createdAt, updatedAt, rev, month, monthManual, ...rest } = tx;
+  openEntryForm({ defaults: { ...rest, status: 'done', date: today() } });
+  requestAnimationFrame(() => document.querySelector('.entry-modal input[name=date]')?.focus());
+}
+
+export function openConvertToRecurring(tx) {
+  const sel = h('select', { class: 'select', 'aria-label': 'Frequência' }, ...Object.entries(REPEAT_PRESETS).filter(([k]) => !['none', 'custom'].includes(k)).map(([v, p]) => h('option', { value: v }, p.label)));
+  sel.value = 'monthly';
+  const end = h('input', { class: 'input', type: 'date' });
+  const go = h('button', { class: 'btn btn-primary', type: 'button', onclick: async () => {
+    const p = REPEAT_PRESETS[sel.value];
+    if (end.value && end.value < tx.date) { toast('A data de término é anterior ao lançamento', { tone: 'error' }); return; }
+    go.classList.add('is-busy');
+    try {
+      await repo.convertToRecurring(tx.id, { frequency: p.frequency, interval: p.interval, endDate: end.value || null });
+      m.close();
+      toast(`“${tx.description}” agora é ${p.label.toLowerCase()}. Este lançamento é a primeira ocorrência.`, { tone: 'success' });
+    } catch (err) { toastError(err); } finally { go.classList.remove('is-busy'); }
+  } }, 'Transformar');
+  const m = openModal({ title: 'Transformar em recorrente', size: 'sm', body: h('div', { class: 'stack-lg' },
+    h('p', { class: 'muted small' }, `“${tx.description}” (${formatMoney(tx.amount)}, ${formatDate(tx.date)}) passa a ser a primeira ocorrência da série. Nenhuma cópia é criada.`),
+    field('Repetir', sel), field(h('span', null, 'Termina em ', h('span', { class: 'opt' }, 'opcional, inclusive')), end)),
+  footer: [h('span', { class: 'grow' }), h('button', { class: 'btn', type: 'button', onclick: () => m.close() }, 'Cancelar'), go] });
+}
+
+async function duplicate(tx, overrides = {}, verb = 'duplicado') {
+  try {
+    const copy = await repo.duplicateTransaction(tx.id, overrides);
+    toast(`Lançamento ${verb}`, { tone: 'success', action: { label: 'Editar', fn: () => openEntryForm({ tx: repo.get('transactions', copy.id) }) } });
   } catch (err) { toastError(err); }
 }
 
@@ -68,9 +129,27 @@ export async function removeTx(tx) {
     const ok = await confirmDialog({ title: 'Excluir parcela?', message: `Apenas a parcela ${tx.installment.index}/${tx.installment.count} será removida. Para cancelar o parcelamento inteiro, use Planejamento → Parcelamentos.`, confirmLabel: 'Excluir parcela', danger: true });
     if (!ok) return;
   }
+  const rule = tx.recurrenceId ? repo.get('recurrences', tx.recurrenceId) : null;
+  if (rule) {
+    const scope = await askScope({ title: `Excluir “${tx.description}”` });
+    if (!scope) return;
+    try {
+      if (scope === 'one') {
+        await repo.skipOccurrence(rule.id, tx.occurrenceDate, { removeDone: true });
+        toast('Ocorrência excluída', { tone: 'success', action: { label: 'Desfazer', fn: () => repo.restoreOccurrence(rule.id, tx).catch(toastError) } });
+      } else if (scope === 'future') {
+        await repo.endSeries(rule.id, tx.occurrenceDate, { removeDoneFrom: tx.occurrenceDate });
+        toast('Série encerrada a partir desta ocorrência', { tone: 'success' });
+      } else {
+        await repo.deleteRecurrence(rule.id);
+        toast('Série excluída. Lançamentos já realizados de outras datas foram preservados.', { tone: 'success' });
+      }
+    } catch (err) { toastError(err); }
+    return;
+  }
   try {
     const removed = await repo.deleteTransaction(tx.id);
-    toast(`“${removed.description}” excluído`, { action: { label: 'Desfazer', fn: () => repo.restoreTransactions([removed]).catch(toastError) } });
+    toast(`“${removed.description}” excluído`, { tone: 'success', action: { label: 'Desfazer', fn: () => repo.restoreTransactions([removed]).catch(toastError) } });
   } catch (err) { toastError(err); }
 }
 

@@ -1,45 +1,58 @@
-import { h, icon, downloadFile, put } from '../utils/dom.js';
+import { h, icon, put } from '../utils/dom.js';
 import { formatMoney } from '../utils/money.js';
-import { formatDate, today } from '../utils/dates.js';
+import { formatDate } from '../utils/dates.js';
 import * as repo from '../database/repository.js';
-import { persistenceStatus, requestPersistence, storageEstimate } from '../database/db.js';
+import { dataPanel, dangerPanel, diagnosticsPanel } from './backup-ui.js';
 import { DB_VERSION, APP_VERSION, DB_NAME } from '../database/schema.js';
-import { buildBackup, parseBackupText, transactionsToCSV, MAX_BACKUP_BYTES } from '../services/backup.js';
 import { cashPosition } from '../services/finance.js';
 import { openModal, confirmDialog } from '../components/modal.js';
 import { toast, toastError } from '../components/toast.js';
 import { field, moneyInput, segmented, intInput, readInt } from '../components/fields.js';
 import { openMenu } from '../components/menu.js';
 import { pageHead, ACCOUNT_KINDS, ACCOUNT_ICON, accountOptions } from './common.js';
-import { applyTheme, currentThemePref, applyMotion, currentMotionPref } from '../theme.js';
+import { applyTheme, currentThemePref, applyMotion, currentMotionPref, applyDensity, currentDensity } from '../theme.js';
+import { arrangedList, openArrangeDialog, setSectionOptions, flushLayout, resetAllAppearance, resetSection } from '../components/layout.js';
 import { auditData } from '../services/integrity.js';
 import { openEntryForm } from '../components/entry-form.js';
 
-const STORE_LABEL = { transactions: 'lançamentos', categories: 'categorias', blocks: 'blocos', accounts: 'contas e cartões', recurrences: 'recorrências', installmentPlans: 'parcelamentos', budgets: 'orçamentos', investments: 'investimentos', investmentEvents: 'registros de investimento', goals: 'metas' };
 
-const GROUPS = [
-  ['aparencia', 'Aparência', 'palette'],
-  ['financeiro', 'Preferências financeiras', 'sliders'],
-  ['contas', 'Contas e cartões', 'card'],
-  ['classificacao', 'Categorias e blocos', 'tag'],
-  ['dados', 'Dados e backup', 'database'],
-  ['integridade', 'Integridade dos registros', 'shield'],
-  ['atalhos', 'Atalhos e sobre', 'info'],
+// Grupos podem ser reordenados, nunca ocultados: funções críticas (backup,
+// restauração, diagnóstico) precisam continuar sempre acessíveis.
+export const SETTINGS_GROUPS = [
+  { id: 'aparencia', label: 'Aparência', icon: 'palette', locked: true },
+  { id: 'personalizacao', label: 'Personalização', icon: 'sliders', locked: true },
+  { id: 'financeiro', label: 'Preferências financeiras', icon: 'calc', locked: true },
+  { id: 'contas', label: 'Contas e cartões', icon: 'card', locked: true },
+  { id: 'classificacao', label: 'Categorias e blocos', icon: 'tag', locked: true },
+  { id: 'dados', label: 'Dados e backup', icon: 'database', locked: true },
+  { id: 'armazenamento', label: 'Armazenamento', icon: 'layers', locked: true },
+  { id: 'integridade', label: 'Integridade dos registros', icon: 'shield', locked: true },
+  { id: 'sobre', label: 'Sobre o Fluxo', icon: 'info', locked: true },
+  { id: 'atalhos', label: 'Atalhos de teclado', icon: 'sparkle', locked: true },
 ];
+const LEGACY_GROUP = { atalhos: 'atalhos' };
 
 export function renderSettings(root, sub) {
+  const order = arrangedList('settings', 'groups', SETTINGS_GROUPS);
+  sub = LEGACY_GROUP[sub] || sub;
   const nav = h('nav', { class: 'settings-nav', 'aria-label': 'Grupos de configurações' },
-    ...GROUPS.map(([id, label, ic]) => h('a', { href: `#/configuracoes/${id}`, dataset: { group: id }, class: sub === id ? 'is-active' : '', onclick: (ev) => { ev.preventDefault(); document.getElementById(`cfg-${id}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' }); nav.querySelectorAll('a').forEach((x) => x.classList.toggle('is-active', x === ev.currentTarget)); } }, icon(ic), label)));
-  const groups = [
-    group('aparencia', 'Aparência', 'Tema e movimento. Preferências deste navegador.', appearance()),
-    group('financeiro', 'Preferências financeiras', 'Usadas nos cálculos de sobra e projeção.', planning()),
-    group('contas', 'Contas e cartões', 'Fontes de pagamento. Cartões com fechamento e vencimento calculam as faturas sozinhos.', accounts()),
-    group('classificacao', 'Categorias e blocos', 'Categoria é a natureza do gasto; bloco é o contexto (pessoal, casa, moto…).', namedSection('categories', 'Categorias'), namedSection('blocks', 'Blocos')),
-    group('dados', 'Dados e backup', 'Seus dados ficam somente neste navegador, neste dispositivo.', dataSection()),
-    group('integridade', 'Integridade dos registros', 'Revisão de possíveis duplicidades e inconsistências. Nada é alterado automaticamente.', integrity()),
-    group('atalhos', 'Atalhos e sobre', null, shortcuts(), about()),
-  ];
-  put(root, pageHead('Configurações', { sub: 'Preferências, cadastros e dados' }), h('div', { class: 'settings-layout' }, nav, h('div', { class: 'stack-lg' }, ...groups)));
+    ...order.map(({ id, label, icon: ic }) => h('a', { href: `#/configuracoes/${id}`, dataset: { group: id }, class: sub === id ? 'is-active' : '', onclick: (ev) => { ev.preventDefault(); document.getElementById(`cfg-${id}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' }); nav.querySelectorAll('a').forEach((x) => x.classList.toggle('is-active', x === ev.currentTarget)); } }, icon(ic), label)));
+  const rerender = () => renderSettings(root, sub);
+  const build = {
+    aparencia: () => group('aparencia', 'Aparência', 'Tema, densidade e movimento.', appearance()),
+    personalizacao: () => group('personalizacao', 'Personalização', 'Organização das telas. Só a aparência é afetada; dados financeiros nunca são alterados aqui.', personalization(rerender)),
+    financeiro: () => group('financeiro', 'Preferências financeiras', 'Usadas nos cálculos de sobra e projeção.', planning()),
+    contas: () => group('contas', 'Contas e cartões', 'Fontes de pagamento. Cartões com fechamento e vencimento calculam as faturas sozinhos.', accounts()),
+    classificacao: () => group('classificacao', 'Categorias e blocos', 'Categoria é a natureza do gasto; bloco é o contexto (pessoal, casa, moto…).', namedSection('categories', 'Categorias'), namedSection('blocks', 'Blocos')),
+    dados: () => group('dados', 'Dados e backup', 'Backups completos, restauração validada e lembretes.', dataPanel(), dangerPanel()),
+    armazenamento: () => group('armazenamento', 'Diagnóstico de armazenamento', 'Estado do banco local neste navegador.', diagnosticsPanel()),
+    integridade: () => group('integridade', 'Integridade dos registros', 'Revisão de possíveis duplicidades e inconsistências. Nada é alterado automaticamente.', integrity()),
+    sobre: () => group('sobre', 'Sobre o Fluxo', null, about()),
+    atalhos: () => group('atalhos', 'Atalhos de teclado', null, shortcuts()),
+  };
+  // Um grupo com falha mostra o erro no lugar e não impede o acesso aos demais (inclusive backup).
+  const groups = order.map(({ id, label }) => { try { return build[id](); } catch (err) { console.error(err); return h('section', { class: 'panel section-error', id: `cfg-${id}`, role: 'alert' }, h('strong', null, `Não foi possível exibir “${label}”.`), h('p', { class: 'small muted' }, String(err?.message || err))); } });
+  put(root, pageHead('Configurações', { sub: 'Preferências, cadastros e dados', actions: h('button', { class: 'btn btn-sm', type: 'button', onclick: () => openArrangeDialog({ section: 'settings', key: 'groups', defs: SETTINGS_GROUPS, title: 'Ordem dos grupos', note: 'Os grupos podem ser reordenados. Nenhum pode ser ocultado, para que backup, restauração e diagnóstico continuem sempre à mão.', onDone: rerender }) }, icon('sliders', 'icon-sm'), 'Organizar') }), h('div', { class: 'settings-layout' }, nav, h('div', { class: 'stack-lg' }, ...groups)));
   if (sub) requestAnimationFrame(() => document.getElementById(`cfg-${sub}`)?.scrollIntoView({ block: 'start' }));
 }
 
@@ -61,8 +74,11 @@ function appearance() {
   const seg = segmented({ label: 'Tema', value: currentThemePref(), options: [{ value: 'system', label: 'Sistema', icon: 'monitor' }, { value: 'light', label: 'Claro', icon: 'sun' }, { value: 'dark', label: 'Escuro', icon: 'moon' }], onChange: (v) => applyTheme(v) });
   const motion = segmented({ label: 'Animações', value: currentMotionPref(), options: [{ value: 'system', label: 'Padrão' }, { value: 'reduced', label: 'Reduzidas' }], onChange: (v) => { applyMotion(v); toast(v === 'reduced' ? 'Animações reduzidas' : 'Animações padrão'); } });
   const collapsed = segmented({ label: 'Menu lateral', value: document.documentElement.classList.contains('sidebar-collapsed') ? 'collapsed' : 'expanded', options: [{ value: 'expanded', label: 'Expandido' }, { value: 'collapsed', label: 'Recolhido' }], onChange: (v) => document.querySelector('[data-action="collapse"]')?.click() });
+  const density = segmented({ label: 'Densidade', value: currentDensity(), options: [{ value: 'compact', label: 'Compacta' }, { value: 'default', label: 'Padrão' }, { value: 'comfortable', label: 'Confortável' }],
+    onChange: (v) => { const d = applyDensity(v); setSectionOptions('global', { density: d }, { undo: false }); flushLayout(); } });
   return h('div', null,
     settingsRow('Tema', 'Sistema acompanha a preferência do sistema operacional.', seg),
+    settingsRow('Densidade', 'Tamanho do texto e espaçamento. Compacta mostra mais informação; Confortável amplia a leitura.', density),
     settingsRow('Animações', 'Reduzidas desliga transições; o sistema também é respeitado.', motion),
     settingsRow('Menu lateral', 'Recolhido mostra só ícones. Atalho: [', collapsed));
 }
@@ -227,92 +243,55 @@ function integrity() {
   return h('div', { class: 'stack-lg' }, out, h('div', null, h('button', { class: 'btn', type: 'button', onclick: async () => { await run(); toast('Verificação concluída'); } }, icon('shield', 'icon-sm'), 'Verificar novamente')));
 }
 
-// ——— Dados ———
-
-function dataSection() {
-  const status = h('span', { class: 'faint small' }, 'verificando…');
-  const usage = h('span', { class: 'faint small' });
-  persistenceStatus().then((s) => {
-    status.textContent = { granted: 'Armazenamento persistente concedido pelo navegador.', denied: 'O navegador ainda não concedeu armazenamento persistente.', unsupported: 'Este navegador não informa o status de persistência.' }[s];
-    if (s === 'denied') status.append(' ', h('button', { class: 'link-btn', type: 'button', onclick: async () => { const r = await requestPersistence(); toast(r === 'granted' ? 'Persistência concedida' : 'O navegador não concedeu agora; ele pode decidir automaticamente com o uso.'); renderAgain(); } }, 'Solicitar'));
-  });
-  storageEstimate().then((e) => { if (e?.usage != null) usage.textContent = `Uso aproximado: ${(e.usage / 1024 / 1024).toFixed(1).replace('.', ',')} MB`; });
-  const file = h('input', { type: 'file', accept: 'application/json,.json', hidden: true, onchange: (ev) => { const f = ev.target.files[0]; ev.target.value = ''; if (f) importFile(f); } });
-  const counts = Object.entries(STORE_LABEL).map(([s, l]) => [l, repo.list(s).length]).filter(([, n]) => n);
-  return section(null, null,
-    h('div', { class: 'notice' }, icon('alert', 'icon-sm'), h('p', null, 'Nada é enviado para servidores. Limpar os dados do site, usar navegação privada ou trocar de navegador pode apagar as informações. O IndexedDB não é criptografado: faça backups regulares e guarde-os em local seguro.')),
-    h('div', { class: 'row wrap' },
-      h('button', { class: 'btn', type: 'button', onclick: exportJSON }, icon('download', 'icon-sm'), 'Exportar backup (JSON)'),
-      h('button', { class: 'btn', type: 'button', onclick: exportCSV }, icon('download', 'icon-sm'), 'Exportar lançamentos (CSV)'),
-      h('button', { class: 'btn', type: 'button', onclick: () => file.click() }, icon('upload', 'icon-sm'), 'Restaurar backup'), file),
-    h('p', { class: 'faint small' }, counts.length ? `Base atual: ${counts.map(([l, n]) => `${n} ${l}`).join(', ')}.` : 'Base vazia.'),
-    h('div', { class: 'stack' }, status, usage),
-    h('div', { class: 'danger-zone' }, h('div', null, h('strong', null, 'Apagar todos os dados'), h('p', { class: 'faint small' }, 'Remove permanentemente todos os registros deste navegador.')),
-      h('button', { class: 'btn btn-danger', type: 'button', onclick: wipe }, 'Apagar tudo')));
-}
-
-function renderAgain() { window.dispatchEvent(new HashChangeEvent('hashchange')); }
-
-export async function exportJSON() {
-  const b = buildBackup(await repo.fullSnapshot());
-  downloadFile(`fluxo-backup-${today()}.json`, JSON.stringify(b, null, 1), 'application/json');
-  toast('Backup exportado', { tone: 'success' });
-}
-
-async function exportCSV() {
-  await repo.whenFullyLoaded();
-  const maps = { categories: new Map(repo.list('categories').map((c) => [c.id, c])), blocks: new Map(repo.list('blocks').map((c) => [c.id, c])), accounts: new Map(repo.list('accounts').map((c) => [c.id, c])) };
-  downloadFile(`fluxo-lancamentos-${today()}.csv`, transactionsToCSV(repo.list('transactions'), maps), 'text/csv;charset=utf-8');
-  toast('CSV exportado', { tone: 'success' });
-}
-
-async function importFile(file) {
-  if (file.size > MAX_BACKUP_BYTES) { toast('Arquivo grande demais para ser um backup.', { tone: 'error' }); return; }
-  let text;
-  try { text = await file.text(); } catch { toast('Não foi possível ler o arquivo.', { tone: 'error' }); return; }
-  const res = parseBackupText(text);
-  if (!res.ok) {
-    const m = openModal({ title: 'Backup inválido', size: 'sm', body: h('div', { class: 'stack' },
-      h('p', null, 'Nenhum dado foi alterado. Problemas encontrados:'),
-      h('ul', { class: 'issues' }, ...res.errors.map((e) => h('li', null, e)))),
-    footer: [h('span', { class: 'grow' }), h('button', { class: 'btn btn-primary', type: 'button', onclick: () => m.close() }, 'Entendi')] });
-    return;
-  }
-  const current = Object.entries(STORE_LABEL).map(([s, l]) => `${repo.list(s).length} ${l}`);
-  const incoming = Object.entries(STORE_LABEL).map(([s, l]) => [l, res.counts[s] || 0]).filter(([, n]) => n);
-  const keepCopy = h('input', { type: 'checkbox', checked: true });
-  const details = h('div', { class: 'stack small' },
-    h('div', { class: 'impact' },
-      h('div', null, h('div', { class: 'faint' }, 'Será importado'), h('div', null, incoming.length ? incoming.map(([l, n]) => `${n} ${l}`).join(', ') : 'nenhum registro')),
-      h('div', null, h('div', { class: 'faint' }, 'Será substituído'), h('div', null, current.filter((c) => !c.startsWith('0 ')).join(', ') || 'base vazia'))),
-    res.exportedAt ? h('p', { class: 'faint' }, `Backup gerado em ${formatDate(res.exportedAt.slice(0, 10))}.`) : null,
-    res.warnings.length ? h('ul', { class: 'issues is-warn' }, ...res.warnings.map((w) => h('li', null, w))) : null,
-    h('label', { class: 'check' }, keepCopy, h('span', null, 'Baixar uma cópia dos dados atuais antes de restaurar')));
-  const ok = await confirmDialog({ title: 'Restaurar backup?', message: 'A base atual será substituída pelo conteúdo do backup em uma única operação. Se algo falhar, nada é alterado.', confirmLabel: 'Restaurar', danger: true, details });
-  if (!ok) return;
-  try {
-    if (keepCopy.checked && !repo.isEmpty()) await exportJSON();
-    await repo.importData(res.backup.data);
-    toast('Backup restaurado', { tone: 'success' });
-  } catch (err) { toastError(err); toast('A restauração falhou; os dados anteriores foram preservados.', { tone: 'error' }); }
-}
-
-async function wipe() {
-  const input = h('input', { class: 'input', placeholder: 'Digite APAGAR', autocomplete: 'off' });
-  const go = h('button', { class: 'btn btn-danger btn-solid', type: 'button', disabled: true, onclick: async () => {
-    try { await repo.wipeAll(); m.close(); toast('Todos os dados foram apagados'); location.hash = '#/visao-geral'; } catch (err) { toastError(err); }
-  } }, 'Apagar definitivamente');
-  input.addEventListener('input', () => { go.disabled = input.value.trim().toUpperCase() !== 'APAGAR'; });
-  const m = openModal({ title: 'Apagar todos os dados?', size: 'sm', body: h('div', { class: 'stack' }, h('p', { class: 'muted' }, 'Esta ação não pode ser desfeita. Exporte um backup antes, se quiser guardar uma cópia.'),
-    h('button', { class: 'btn', type: 'button', onclick: exportJSON }, icon('download', 'icon-sm'), 'Exportar backup agora'), field('Confirmação', input)),
-  footer: [h('span', { class: 'grow' }), h('button', { class: 'btn', type: 'button', onclick: () => m.close() }, 'Cancelar'), go] });
-}
-
 function shortcuts() {
   const list = [['[', 'Recolher ou expandir o menu'], ['Ctrl+Enter', 'Salvar o formulário aberto'], ['N', 'Novo lançamento'], ['C', 'Calculadora (Alt+C dentro de campos)'], ['/', 'Buscar lançamentos'], ['← →', 'Mês anterior / próximo'], ['T', 'Voltar ao mês atual'], ['1–5', 'Ir para cada seção'], ['Shift+Enter', 'Salvar e criar outro'], ['Ctrl+Enter', 'Na calculadora: inserir o resultado no campo'], ['Esc', 'Fechar janelas']];
-  return section('Atalhos de teclado', null, h('div', { class: 'shortcuts' }, ...list.map(([k, l]) => h('div', { class: 'shortcut' }, h('span', { class: 'keys' }, ...k.split(' ').map((x) => h('kbd', null, x))), h('span', { class: 'muted small' }, l)))));
+  return section(null, null, h('div', { class: 'shortcuts' }, ...list.map(([k, l]) => h('div', { class: 'shortcut' }, h('span', { class: 'keys' }, ...k.split(' ').map((x) => h('kbd', null, x))), h('span', { class: 'muted small' }, l)))));
+}
+
+const REPO_URL = 'https://github.com/filipeesantana/fluxo';
+const APP_URL = 'https://filipeesantana.github.io/fluxo/';
+
+function personalization(rerender) {
+  const SECTIONS = [['overview', 'Visão geral', '#/visao-geral'], ['planning', 'Planejamento (abas)', '#/planejamento'], ['entries', 'Lançamentos (exibição)', '#/lancamentos'], ['investments', 'Investimentos', '#/investimentos'], ['settings', 'Configurações (ordem dos grupos)', '#/configuracoes']];
+  const rows = SECTIONS.map(([id, label, href]) => settingsRow(label, null, h('div', { class: 'row' },
+    h('a', { class: 'btn btn-sm', href }, 'Abrir'),
+    h('button', { class: 'btn btn-ghost btn-sm', type: 'button', onclick: async () => {
+      if (!(await confirmDialog({ title: `Restaurar ${label}?`, message: 'A organização desta seção volta ao padrão. Nenhum dado financeiro é alterado.', confirmLabel: 'Restaurar seção' }))) return;
+      resetSection(id); await flushLayout(); toast('Seção restaurada'); rerender();
+    } }, 'Restaurar seção'))));
+  return h('div', { class: 'stack-lg' },
+    h('p', { class: 'faint small' }, 'Use “Personalizar” na Visão geral e em Investimentos para mover, redimensionar, ocultar e colorir componentes. A organização fica salva no banco local e entra nos backups.'),
+    h('div', null, ...rows),
+    h('div', { class: 'settings-row' }, h('div', { class: 'label' }, h('strong', null, 'Restaurar toda a aparência'), h('span', null, 'Volta todas as telas, a densidade e as cores ao padrão. Lançamentos, contas, metas e backups não são tocados.')),
+      h('button', { class: 'btn', type: 'button', onclick: async () => {
+        if (!(await confirmDialog({ title: 'Restaurar toda a aparência?', message: 'Layouts, ordem de abas, colunas, cores e densidade voltam ao padrão. Seus dados financeiros permanecem exatamente como estão.', confirmLabel: 'Restaurar aparência' }))) return;
+        try { await resetAllAppearance(); applyDensity('default'); toast('Aparência restaurada', { tone: 'success' }); rerender(); } catch (err) { toastError(err); }
+      } }, 'Restaurar toda a aparência')));
 }
 
 function about() {
-  return section('Sobre', null, h('p', { class: 'faint small' }, `Fluxo ${APP_VERSION} · esquema de dados v${DB_VERSION} · banco “${DB_NAME}”. Aplicação local-first: sem contas, sem servidores, sem telemetria.`));
+  const p = (...c) => h('p', { class: 'small' }, ...c);
+  const sub = (t) => h('h3', null, t);
+  return h('div', { class: 'stack-lg about' },
+    h('div', { class: 'about-brand' }, h('img', { src: 'assets/brand/fluxo-symbol.svg', alt: '', width: 40, height: 40 }), h('div', null, h('strong', null, 'Fluxo'), h('div', { class: 'faint small' }, `Versão ${APP_VERSION} · esquema de dados v${DB_VERSION}`))),
+    section(null, null,
+      sub('O que é'),
+      p('Um organizador financeiro pessoal que roda inteiro no seu navegador. Ele junta, num só lugar, o que entrou, o que saiu, o que ainda vai vencer e quanto sobra para investir no mês.'),
+      sub('Para que serve'),
+      p('Para responder perguntas simples com números confiáveis: quanto ainda vou gastar este mês, quanto sobra depois das contas, quando uma meta fica pronta. Ele não substitui seu banco nem movimenta dinheiro.'),
+      sub('Como foi pensado'),
+      p('Poucos campos para registrar, cálculos transparentes e nada escondido: cada indicador mostra de onde vem. Previsto e realizado ficam sempre separados, e simulações nunca viram lançamentos sozinhas.'),
+      sub('Como funciona'),
+      p('Todos os números saem de um único motor de cálculo, usado pela visão geral, pelo calendário, pela projeção e pelos detalhamentos. Valores são guardados em centavos inteiros, sem arredondamentos acumulados.'),
+      sub('Onde ficam seus dados'),
+      p('No IndexedDB deste navegador, neste dispositivo. É local-first: não há conta, servidor, sincronização nem telemetria. O endereço do site faz parte da identidade do armazenamento — o mesmo navegador no mesmo endereço encontra os mesmos dados.'),
+      p('O IndexedDB não é criptografado. Qualquer pessoa ou programa com acesso a este perfil do navegador pode ler os dados. Limpar os dados do site, usar navegação privada ou trocar de navegador pode fazê-los desaparecer.'),
+      sub('Backups'),
+      p('O backup é um arquivo JSON completo, com dados, preferências e personalização, conferido por uma soma SHA-256 que detecta arquivos corrompidos ou alterados (não é uma assinatura). Você pode protegê-lo com senha: sem a senha, não há como recuperar o conteúdo. Guarde os arquivos fora do navegador, em local privado.'),
+      sub('Limitações'),
+      p('Não há sincronização entre aparelhos, nem importação de extratos bancários. Os cálculos dependem do que foi registrado. Projeções são estimativas e não garantias. O app foi testado no Chromium; outros navegadores modernos devem funcionar, mas não foram verificados em todas as combinações.'),
+      h('div', { class: 'row wrap' },
+        h('a', { class: 'btn btn-sm', href: REPO_URL, target: '_blank', rel: 'noopener noreferrer' }, 'Repositório'),
+        h('a', { class: 'btn btn-sm', href: APP_URL, target: '_blank', rel: 'noopener noreferrer' }, 'Endereço do aplicativo')),
+      h('p', { class: 'faint xsmall' }, `Banco local “${DB_NAME}”.`)));
 }

@@ -16,6 +16,7 @@ export function s(tag, attrs, ...children) {
     for (const [k, v] of Object.entries(attrs)) {
       if (v === false || v == null) continue;
       if (k === 'class') el.setAttribute('class', v);
+      else if (k === 'style') el.style.cssText = String(v); // CSSOM: permitido pela CSP (sem atributo style)
       else if (k.startsWith('on') && typeof v === 'function') el.addEventListener(k.slice(2), v);
       else el.setAttribute(k, String(v));
     }
@@ -29,8 +30,9 @@ function applyAttrs(el, attrs) {
   for (const [k, v] of Object.entries(attrs)) {
     if (v === false || v == null) continue;
     if (k === 'class') el.className = Array.isArray(v) ? v.filter(Boolean).join(' ') : v;
+    else if (k === 'style' && typeof v === 'string') el.style.cssText = v;
     else if (k === 'style' && typeof v === 'object') { for (const [sk, sv] of Object.entries(v)) { if (sk.startsWith('--')) el.style.setProperty(sk, sv); else el.style[sk] = sv; } }
-    else if (k === 'dataset') Object.assign(el.dataset, v);
+    else if (k === 'dataset') { for (const [dk, dv] of Object.entries(v)) if (dv != null && dv !== false) el.dataset[dk] = dv; }
     else if (k.startsWith('on') && typeof v === 'function') el.addEventListener(k.slice(2).toLowerCase(), v);
     else if (k === 'value') el.value = v;
     else if (k === 'checked' || k === 'disabled' || k === 'selected' || k === 'hidden') el[k] = Boolean(v);

@@ -12,49 +12,74 @@ import { toast, toastError } from '../components/toast.js';
 import { field, moneyInput, segmented } from '../components/fields.js';
 import { openEntryForm } from '../components/entry-form.js';
 import { openMenu } from '../components/menu.js';
-import { ui, setMonth, readPref, writePref } from '../state.js';
+import { ui, setMonth, readPref, writePref, readChoice } from '../state.js';
 import { pageHead, monthNav, categoryName, blockName, accountName, emptyState, categoryOptions, blockOptions, capitalize, txRow } from './common.js';
 import { openRecurrenceForm, endSeries, openItem, itemMenu, toggleStatus } from './actions.js';
 import { budgetRow } from './overview.js';
 import { renderCalendar } from './calendar-view.js';
+import { arrangedList, openArrangeDialog } from '../components/layout.js';
 import { renderProjection, renderScenarios } from './projection-view.js';
 
-const TABS = [
-  ['calendario', 'Calendário', 'calendar'],
-  ['projecao', 'Projeção', 'chart'],
-  ['simulacoes', 'Simulações', 'branch'],
-  ['recorrencias', 'Recorrências', 'repeat'],
-  ['programadas', 'Programadas', 'clock'],
-  ['parcelamentos', 'Parcelamentos', 'layers'],
-  ['orcamentos', 'Orçamentos', 'target'],
+const planned = () => openEntryForm({ defaults: { status: 'planned', date: addMonthsDate(1) } });
+
+/**
+ * Registro único das abas do Planejamento: cada aba declara rótulo, ícone,
+ * subtítulo, ação e função de renderização. Rotas, preferências e
+ * navegação derivam desta lista; não existe outro mapa a manter em sincronia.
+ */
+export const PLANNING_TABS = [
+  { id: 'calendario', label: 'Calendário', icon: 'calendar', month: true, sub: 'Compromissos e movimentações por dia', action: () => h('button', { class: 'btn', type: 'button', onclick: planned }, icon('plus', 'icon-sm'), 'Compromisso futuro'), render: (body) => renderCalendar(body) },
+  { id: 'projecao', label: 'Projeção', icon: 'chart', sub: 'Trajetória do orçamento nos próximos meses e anos', action: () => h('button', { class: 'btn', type: 'button', onclick: planned }, icon('plus', 'icon-sm'), 'Despesa programada'), render: (body, rerender) => renderProjection(body, rerender) },
+  { id: 'simulacoes', label: 'Simulações', icon: 'branch', sub: 'Teste decisões sem alterar seus registros', action: () => null, render: (body, rerender) => renderScenarios(body, rerender) },
+  { id: 'recorrencias', label: 'Recorrências', icon: 'repeat', sub: 'Contas e receitas que se repetem', action: () => h('button', { class: 'btn', type: 'button', onclick: () => openRecurrenceForm() }, icon('plus', 'icon-sm'), 'Nova recorrência'), render: (body) => put(body, recurrences()) },
+  { id: 'programadas', label: 'Programadas', icon: 'clock', sub: 'Gastos pontuais futuros', action: () => h('button', { class: 'btn', type: 'button', onclick: planned }, icon('plus', 'icon-sm'), 'Despesa programada'), render: (body) => put(body, scheduled()) },
+  { id: 'parcelamentos', label: 'Parcelamentos', icon: 'layers', sub: 'Compras parceladas e saldo restante', action: () => h('button', { class: 'btn', type: 'button', onclick: () => { openEntryForm(); document.querySelector('[data-toggle="parcel"]')?.click(); } }, icon('plus', 'icon-sm'), 'Novo parcelamento'), render: (body) => put(body, plans()) },
+  { id: 'orcamentos', label: 'Orçamentos', icon: 'target', month: true, sub: 'Limites mensais por categoria ou bloco', action: () => h('button', { class: 'btn', type: 'button', onclick: () => openBudgetForm() }, icon('plus', 'icon-sm'), 'Novo orçamento'), render: (body) => put(body, budgets()) },
 ];
-const MONTH_TABS = ['calendario', 'orcamentos'];
+// Abas renomeadas entre versões (a 1.0 gravava "proximos").
+export const PLANNING_LEGACY = { proximos: 'projecao' };
+const TAB_IDS = PLANNING_TABS.map((t) => t.id);
+
+/** Resolve a aba pedida pela URL ou pela preferência salva, sempre para uma aba válida. */
+export function resolvePlanningTab(sub) {
+  const fromUrl = PLANNING_LEGACY[sub] || sub;
+  if (TAB_IDS.includes(fromUrl)) return fromUrl;
+  return readChoice('planning.tab', TAB_IDS, 'calendario', PLANNING_LEGACY);
+}
 
 export function renderPlanning(root, sub) {
-  const legacy = { proximos: 'projecao' };
-  const wanted = legacy[sub] || sub;
-  const tab = TABS.some(([k]) => k === wanted) ? wanted : readPref('planning.tab', 'calendario');
-  writePref('planning.tab', tab);
+  const id = resolvePlanningTab(sub);
+  writePref('planning.tab', id);
+  const tab = PLANNING_TABS.find((t) => t.id === id);
+  const rerender = () => renderPlanning(root, id);
   const nav = h('nav', { class: 'subnav', 'aria-label': 'Seções do planejamento' },
-    ...TABS.map(([k, l, ic]) => h('a', { href: `#/planejamento/${k}`, class: 'subnav-link', 'aria-current': k === tab ? 'page' : null }, icon(ic), l)));
-  const planned = () => openEntryForm({ defaults: { status: 'planned', date: addMonthsDate(1) } });
-  const actions = {
-    calendario: h('button', { class: 'btn', type: 'button', onclick: planned }, icon('plus', 'icon-sm'), 'Compromisso futuro'),
-    projecao: h('button', { class: 'btn', type: 'button', onclick: planned }, icon('plus', 'icon-sm'), 'Despesa programada'),
-    simulacoes: null,
-    recorrencias: h('button', { class: 'btn', type: 'button', onclick: () => openRecurrenceForm() }, icon('plus', 'icon-sm'), 'Nova recorrência'),
-    programadas: h('button', { class: 'btn', type: 'button', onclick: planned }, icon('plus', 'icon-sm'), 'Despesa programada'),
-    parcelamentos: h('button', { class: 'btn', type: 'button', onclick: () => { openEntryForm(); document.querySelector('[data-toggle="parcel"]')?.click(); } }, icon('plus', 'icon-sm'), 'Novo parcelamento'),
-    orcamentos: h('button', { class: 'btn', type: 'button', onclick: () => openBudgetForm() }, icon('plus', 'icon-sm'), 'Novo orçamento'),
-  }[tab];
-  const subs = { calendario: 'Compromissos e movimentações por dia', projecao: 'Trajetória do orçamento nos próximos meses e anos', simulacoes: 'Teste decisões sem alterar seus registros', recorrencias: 'Contas e receitas que se repetem', programadas: 'Gastos pontuais futuros', parcelamentos: 'Compras parceladas e saldo restante', orcamentos: 'Limites mensais por categoria ou bloco' };
+    ...orderedTabs(id).map((t) => h('a', { href: `#/planejamento/${t.id}`, class: 'subnav-link', dataset: { tab: t.id }, 'aria-current': t.id === id ? 'page' : null }, icon(t.icon), t.label)),
+    h('button', { class: 'btn btn-ghost btn-icon btn-sm subnav-more', type: 'button', 'aria-label': 'Organizar abas', title: 'Organizar abas', onclick: () => arrangeTabs(rerender) }, icon('sliders', 'icon-sm')));
   const body = h('div', { class: 'stack-lg' });
-  const rerender = () => renderPlanning(root, tab);
-  put(root, pageHead('Planejamento', { sub: subs[tab], controls: MONTH_TABS.includes(tab) ? monthNav() : null, actions }), nav, body);
-  if (tab === 'calendario') renderCalendar(body);
-  else if (tab === 'projecao') renderProjection(body, rerender);
-  else if (tab === 'simulacoes') renderScenarios(body, rerender);
-  else put(body, { recorrencias: recurrences, programadas: scheduled, parcelamentos: plans, orcamentos: budgets }[tab]());
+  put(root, pageHead('Planejamento', { sub: tab.sub, controls: tab.month ? monthNav() : null, actions: tab.action() }), nav, body);
+  // Erro localizado: uma aba com falha não derruba a seção nem o restante do app.
+  try {
+    tab.render(body, rerender);
+  } catch (err) {
+    console.error(err);
+    put(body, sectionError(`Não foi possível exibir “${tab.label}”.`, err, rerender));
+  }
+}
+
+/** Abas na ordem escolhida pelo usuário; a aba aberta sempre aparece, mesmo se oculta. */
+function orderedTabs(activeId) {
+  return arrangedList('planning', 'tabs', PLANNING_TABS).filter((t) => !t.hidden || t.id === activeId);
+}
+
+function arrangeTabs(rerender) {
+  openArrangeDialog({ section: 'planning', key: 'tabs', defs: PLANNING_TABS, title: 'Organizar abas do Planejamento', note: 'Escolha a ordem e quais abas aparecem. Abas ocultas continuam acessíveis pelo endereço e voltam quando você quiser.', onDone: rerender });
+}
+
+export function sectionError(title, err, retry) {
+  return h('div', { class: 'panel section-error', role: 'alert' },
+    h('div', { class: 'row' }, icon('alert', 'icon-sm'), h('strong', null, title)),
+    h('p', { class: 'small muted' }, 'Seus dados não foram alterados. Detalhe técnico: ', h('code', null, String(err?.message || err))),
+    retry ? h('button', { class: 'btn btn-sm', type: 'button', onclick: retry }, 'Tentar novamente') : null);
 }
 
 function addMonthsDate(n) {

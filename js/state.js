@@ -36,3 +36,16 @@ export function readPref(key, fallback) {
 export function writePref(key, value) {
   try { localStorage.setItem(`gf.${key}`, value); } catch { /* preferências são opcionais */ }
 }
+
+/**
+ * Lê uma preferência de escolha fechada. Valores antigos são convertidos por
+ * `legacy`; qualquer valor desconhecido volta ao padrão (e é regravado), para
+ * que uma preferência de outra versão nunca quebre uma tela.
+ */
+export function readChoice(key, allowed, fallback, legacy = {}) {
+  const raw = readPref(key, fallback);
+  const v = legacy[raw] ?? raw;
+  if (allowed.includes(v)) { if (v !== raw) writePref(key, v); return v; }
+  writePref(key, fallback);
+  return fallback;
+}

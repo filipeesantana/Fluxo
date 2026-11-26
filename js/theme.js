@@ -36,3 +36,17 @@ export function initTheme() {
   media.addEventListener('change', () => { if (currentThemePref() === 'system') applyTheme('system'); });
   window.addEventListener('storage', (ev) => { if (ev.key === 'gf.theme') applyTheme(currentThemePref()); });
 }
+
+// Densidade: gravada no navegador (aplicada antes da primeira pintura por boot.js)
+// e espelhada no layout salvo no banco, para acompanhar backups e restaurações.
+export const DENSITIES = ['compact', 'default', 'comfortable'];
+export function currentDensity() {
+  const v = readPref('density', 'default');
+  return DENSITIES.includes(v) ? v : 'default';
+}
+export function applyDensity(v) {
+  const d = DENSITIES.includes(v) ? v : 'default';
+  writePref('density', d);
+  document.documentElement.dataset.density = d;
+  return d;
+}
