@@ -16,8 +16,8 @@ import { openModal } from '../components/modal.js';
 import { segmented } from '../components/fields.js';
 import { openEntryForm } from '../components/entry-form.js';
 import { ui, setMonth, setEntriesFilter, resetEntriesFilter, readChoice } from '../state.js';
-import { monthNav, pageHead, panel, txRow, investRow, categoryName, blockName, accountName, colorOf, emptyState, kv, capitalize } from './common.js';
-import { openItem, itemMenu, toggleStatus } from './actions.js';
+import { monthNav, pageHead, panel, txRow, investRow, categoryName, blockName, accountName, colorOf, emptyState, kv, capitalize, blockSource } from './common.js';
+import { openItem, itemMenu, toggleStatus, copyToMonth } from './actions.js';
 
 const lastKpi = new Map();
 const MONTHS_PT = ['jan', 'fev', 'mar', 'abr', 'mai', 'jun', 'jul', 'ago', 'set', 'out', 'nov', 'dez'];
@@ -64,25 +64,61 @@ function topGoal() {
   return rows.sort((a, b) => b.ratio - a.ratio).find((r) => r.ratio < 1) || rows[0];
 }
 
-/** Painel contextual: movimentações de uma categoria, bloco ou fonte no mês. */
+/**
+ * Painel contextual ("pasta inteligente") de uma categoria, bloco ou fonte no mês:
+ * lançamentos, total, pago e pendente, comparação com o mês anterior, evolução,
+ * distribuição por categoria e ações (adicionar já preenchido, copiar para o próximo mês).
+ * Todos os números vêm do motor financeiro: agrupar nunca soma de novo.
+ */
 export function openGroupPanel(field, key, month = ui.month) {
   const nameFn = { categoryId: categoryName, blockId: blockName, sourceId: accountName }[field];
   const dimension = { categoryId: 'Categoria', blockId: 'Bloco', sourceId: 'Fonte' }[field];
-  const s = summarize(repo.context(), month);
-  const items = s.items.filter((it) => (it.type === 'expense' || it.type === 'refund') && ((it[field] || NONE) === key))
-    .sort(byDateDesc);
+  const id = key === NONE ? null : key;
+  let m;
+  const build = () => {
+  const ctx = repo.context();
+  const pick = (m) => summarize(ctx, m).items.filter((it) => (it.type === 'expense' || it.type === 'refund') && ((it[field] || NONE) === key));
+  const s = summarize(ctx, month);
+  const items = pick(month).sort(byDateDesc);
   const total = items.reduce((t, it) => t + expenseValue(it), 0);
-  const planned = items.filter((i) => i.status !== 'done').reduce((t, it) => t + expenseValue(it), 0);
-  const list = h('div', { class: 'tx-list', role: 'list' }, ...items.map((it) => txRow(it, { onOpen: (x) => { m.close(); openItem(x); }, onToggle: toggleStatus, showDate: true })));
+  const done = items.filter((i) => i.status === 'done').reduce((t, it) => t + expenseValue(it), 0);
+  const prevTotal = pick(addMonths(month, -1)).reduce((t, it) => t + expenseValue(it), 0);
+  const diff = total - prevTotal;
+  const series = Array.from({ length: 6 }, (_, i) => addMonths(month, i - 5)).map((m) => ({ m, v: m === month ? total : pick(m).reduce((t, it) => t + expenseValue(it), 0) }));
+  const maxV = Math.max(1, ...series.map((x) => x.v));
+  const evolution = h('div', { class: 'evo-bars', role: 'img', 'aria-label': `Evolução: ${series.map((x) => `${formatMonthShort(x.m)} ${formatMoney(x.v)}`).join(', ')}` },
+    ...series.map((x) => h('div', { class: `evo-bar${x.m === month ? ' is-current' : ''}` },
+      h('span', { class: 'evo-fill', style: { height: `${Math.round((x.v / maxV) * 100)}%` } }), h('span', { class: 'xsmall faint' }, capitalize(formatMonthShort(x.m)).slice(0, 3)))));
+  const byCat = new Map();
+  if (field !== 'categoryId') for (const it of items) byCat.set(it.categoryId || NONE, (byCat.get(it.categoryId || NONE) || 0) + expenseValue(it));
+  const catList = byCat.size > 1 ? barList([...byCat.entries()].map(([k, v]) => ({ key: k, total: v, pct: total > 0 ? (v / total) * 100 : 0, planned: 0 })).sort((a, b) => b.total - a.total), { id: 'categoryId', labelOf: (k) => categoryName(k === NONE ? null : k), colorOf, limit: 5 }) : null;
+  const list = h('div', { class: 'tx-list', role: 'list' }, ...items.map((it) => txRow(it, { onOpen: (x) => { m.close(); openItem(x); }, onMenu: itemMenu, onToggle: toggleStatus, showDate: true })));
+  const copyable = items.filter((it) => !it.virtual && !it.forecast && !it.planId && !it.remainderOf && !it.recurrenceId).map((it) => it.id);
+  const add = () => {
+    m.close();
+    const d = month === monthOf(today()) ? today() : `${month}-01`;
+    openEntryForm({ defaults: { type: 'expense', date: d, [field]: id, ...(field === 'blockId' && blockSource(id) ? { sourceId: blockSource(id).account.id } : {}) } });
+  };
   const body = h('div', { class: 'stack-lg' },
+    h('div', { class: 'row wrap' },
+      h('button', { class: 'btn btn-primary btn-sm', type: 'button', name: 'groupAdd', onclick: add }, icon('plus', 'icon-sm'), 'Adicionar lançamento'),
+      copyable.length ? h('button', { class: 'btn btn-sm', type: 'button', name: 'groupCopy', title: 'Copia os lançamentos avulsos deste grupo para o próximo mês, como previstos', onclick: () => { copyToMonth(copyable, addMonths(month, 1)); } }, icon('copy', 'icon-sm'), `Copiar para ${formatMonthShort(addMonths(month, 1))}`) : null,
+      field === 'blockId' && id && blockSource(id) ? h('span', { class: 'faint small' }, `Fonte: ${blockSource(id).account.name}`) : null),
     h('div', { class: 'kvs' },
       kv('Total no mês', formatMoney(total), { cls: 'kv-strong' }),
-      kv('Participação nas despesas', s.expenseTotal > 0 ? formatPercent((total / s.expenseTotal) * 100, 1) : '—'),
-      planned ? kv('Ainda previsto', formatMoney(planned), { cls: 'warn' }) : null,
-      kv('Movimentações', String(items.length))),
+      kv('Pago', formatMoney(done)),
+      total - done ? kv('Pendente', formatMoney(total - done), { cls: 'warn' }) : null,
+      kv(`Mês anterior (${formatMonthShort(addMonths(month, -1))})`, `${formatMoney(prevTotal)}${prevTotal || total ? ` · ${diff > 0 ? '+' : diff < 0 ? '−' : ''}${formatMoney(Math.abs(diff))}` : ''}`),
+      kv('Participação nas despesas', s.expenseTotal > 0 ? formatPercent((total / s.expenseTotal) * 100, 1) : '—')),
+    h('div', { class: 'stack-sm' }, h('span', { class: 'field-label' }, 'Últimos 6 meses'), evolution),
+    catList ? h('div', { class: 'stack-sm' }, h('span', { class: 'field-label' }, 'Por categoria'), catList) : null,
     items.length ? list : emptyState('Nada neste mês', null));
-  const m = openModal({
-    title: `${nameFn(key === NONE ? null : key)} · ${capitalize(formatMonth(month))}`, body, drawer: true,
+  return body;
+  };
+  // Mudanças feitas a partir do painel (pagar, copiar, editar) atualizam a pasta aberta, no lugar.
+  const off = repo.subscribe(() => { if (m && document.body.contains(m.el)) put(m.body, build()); });
+  m = openModal({
+    title: `${nameFn(id)} · ${capitalize(formatMonth(month))}`, body: build(), drawer: true, className: 'group-drawer', onClose: () => off(),
     footer: [h('span', { class: 'faint small' }, dimension), h('span', { class: 'grow' }),
       h('button', { class: 'btn', type: 'button', onclick: () => { m.close(); resetEntriesFilter(); setEntriesFilter({ [field]: key, scope: 'month', type: 'expenses' }, { navigate: true }); } }, 'Abrir em Lançamentos'),
       h('button', { class: 'btn btn-primary', type: 'button', onclick: () => m.close() }, 'Fechar')],

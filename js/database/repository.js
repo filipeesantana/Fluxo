@@ -5,7 +5,7 @@ import { competenceOf, isCard, billFor } from '../services/cards.js';
 import { buildInstallments } from '../services/installments.js';
 import { endDateForCount, ruleOccurrences, ruleMode, parseDays, firstKeyFor } from '../services/recurrence.js';
 export { firstKeyFor };
-import { createContext } from '../services/finance.js';
+import { createContext, monthItems } from '../services/finance.js';
 import { today, addDays, currentMonth, monthOf, addMonths, firstDay, lastDay, dateInMonth } from '../utils/dates.js';
 import { uid } from '../utils/dom.js';
 
@@ -316,7 +316,7 @@ export async function duplicateTransaction(id, overrides = {}) {
   const tx = data.transactions.get(id);
   if (!tx) return null;
   // A cópia nunca herda vínculo de série, parcela, previsão nem pagamento parcial.
-  const { id: _, rev, recurrenceId, occurrenceDate, occurrenceKey, period, remainderOf, plannedAmount, planId, installment, createdAt, ...rest } = tx;
+  const { id: _, rev, recurrenceId, occurrenceDate, occurrenceKey, period, remainderOf, plannedAmount, plannedDate, planId, installment, createdAt, ...rest } = tx;
   return saveTransaction({ ...rest, ...overrides, monthManual: false });
 }
 
@@ -355,6 +355,49 @@ export async function replicateTransaction(id, { months, dateMode = 'same', day 
   }
   if (ops.length) await apply(ops);
   return created;
+}
+
+const foldDesc = (x) => String(x || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
+
+/**
+ * Lançamento "igual" já previsto ou realizado no mês de destino: mesma descrição e
+ * tipo (inclui ocorrências projetadas de recorrências). Serve para avisar, nunca para apagar.
+ */
+export function conflictIn(tx, month, items = monthItems(context(), month)) {
+  const q = foldDesc(tx.description);
+  return items.find((i) => i.id !== tx.id && i.type === tx.type && i.type !== 'transfer' && foldDesc(i.description) === q && !i.remainderOf) || null;
+}
+
+/**
+ * Copia lançamentos para um mês (próximo mês, outro mês, em lote ou "trazer do mês
+ * anterior"), numa única transação. Mantém descrição, valor, categoria, bloco, fonte,
+ * método e observação; a cópia é independente e sempre prevista (o pago não é copiado).
+ * - conflitos (já existe no destino) são devolvidos e não copiados, salvo force;
+ * - parcelas, transferências e restantes não são copiados;
+ * - ids determinísticos por operação: repetir a mesma operação não duplica.
+ */
+export async function copyTransactionsTo(ids, month, { opId, force = false } = {}) {
+  if (!/^\d{4}-\d{2}$/.test(month)) throw new ValidationError('Mês inválido.');
+  if (!opId) throw new ValidationError('Operação sem identificador.');
+  const uniq = [...new Set(ids)].slice(0, 500);
+  const items = monthItems(context(), month);
+  const ops = [], created = [], conflicts = [], skipped = [];
+  uniq.forEach((id, i) => {
+    const tx = data.transactions.get(id);
+    if (!tx) return;
+    if (tx.type === 'transfer' || tx.planId || tx.remainderOf) { skipped.push(tx); return; }
+    const cid = `${opId}:${month}:${i}`;
+    if (data.transactions.has(cid)) return; // mesma operação repetida
+    const hit = conflictIn(tx, month, items);
+    if (hit && !force) { conflicts.push({ tx, existing: hit }); return; }
+    const { id: _, rev, recurrenceId, occurrenceDate, occurrenceKey, period, remainderOf, plannedAmount, plannedDate, planId, installment, createdAt, updatedAt, refundOf, monthManual, month: m0, billMonth, forecastId, replicaOf, estimated, ...rest } = tx;
+    const date = tx.date ? dateInMonth(month, Number(tx.date.slice(8, 10))) : null;
+    const row = normalizeTransaction({ ...rest, id: cid, status: 'planned', amount: tx.plannedAmount || tx.amount, date, period: date ? undefined : month, month: date ? undefined : month, monthManual: false, replicaOf: tx.id });
+    ops.push({ store: 'transactions', put: row });
+    created.push(row);
+  });
+  if (ops.length) await apply(ops);
+  return { created, conflicts, skipped };
 }
 
 // ——— Recorrências ———
@@ -1043,6 +1086,33 @@ export async function recordBackup(info) {
 /** Preferências visuais (layout): separadas dos dados; gravação silenciosa (sem redesenhar tudo). */
 export async function setUiLayout(value) {
   await apply([{ store: 'meta', put: { key: 'ui.layout', value } }], { silent: true });
+}
+
+// ——— Modelos de lançamento (atalhos de preenchimento; nunca movimentações) ———
+
+export const listTemplates = () => [...(data.meta.get('templates')?.value || [])];
+
+/** Salva (ou atualiza pelo mesmo id ou pela mesma descrição) um modelo. */
+export async function saveTemplate(input) {
+  const list0 = listTemplates();
+  const fold = (x) => String(x || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
+  const same = list0.find((t) => t.id === input.id || (fold(t.description) === fold(input.description) && t.type === input.type));
+  const row = {
+    id: same?.id || input.id || uid(), type: input.type === 'income' ? 'income' : 'expense', description: String(input.description || '').trim().slice(0, 200),
+    amount: Number.isSafeInteger(input.amount) && input.amount > 0 ? input.amount : null,
+    categoryId: input.categoryId || null, blockId: input.blockId || null, sourceId: input.sourceId || null,
+    note: input.note ? String(input.note).slice(0, 500) : null, repeat: ['weekly', 'biweekly', 'monthly', 'yearly'].includes(input.repeat) ? input.repeat : 'none',
+  };
+  if (!row.description) throw new ValidationError('O modelo precisa de uma descrição.');
+  const next = same ? list0.map((t) => (t.id === same.id ? row : t)) : [...list0, row];
+  if (next.length > 60) throw new ValidationError('Limite de 60 modelos atingido. Remova algum antes de criar outro.');
+  await apply([{ store: 'meta', put: { key: 'templates', value: next } }]);
+  return row;
+}
+
+export async function deleteTemplate(id) {
+  const next = listTemplates().filter((t) => t.id !== id);
+  await apply([{ store: 'meta', put: { key: 'templates', value: next } }]);
 }
 
 export const lastBackup = () => data.meta.get('lastBackup')?.value || null;

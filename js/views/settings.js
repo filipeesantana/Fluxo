@@ -44,7 +44,7 @@ export function renderSettings(root, sub) {
     personalizacao: () => group('personalizacao', 'Personalização', 'Organização das telas. Só a aparência é afetada; dados financeiros nunca são alterados aqui.', personalization(rerender)),
     financeiro: () => group('financeiro', 'Preferências financeiras', 'Usadas nos cálculos de sobra e projeção.', planning()),
     contas: () => group('contas', 'Contas e cartões', 'Fontes de pagamento. Cartões com fechamento e vencimento calculam as faturas sozinhos.', accounts()),
-    classificacao: () => group('classificacao', 'Categorias e blocos', 'Categoria é a natureza do gasto; bloco é o contexto (pessoal, casa, moto…).', namedSection('categories', 'Categorias'), namedSection('blocks', 'Blocos')),
+    classificacao: () => group('classificacao', 'Categorias e blocos', 'Categoria é a natureza do gasto; bloco é o contexto (pessoal, casa, moto…).', namedSection('categories', 'Categorias'), namedSection('blocks', 'Blocos', 'Um bloco pode ter uma fonte padrão: Fatura Nubank → Cartão Nubank.')),
     dados: () => group('dados', 'Dados e backup', 'Backups completos, restauração validada e lembretes.', dataPanel(), dangerPanel()),
     armazenamento: () => group('armazenamento', 'Diagnóstico de armazenamento', 'Estado do banco local neste navegador.', diagnosticsPanel()),
     integridade: () => group('integridade', 'Integridade dos registros', 'Revisão de possíveis duplicidades e inconsistências. Nada é alterado automaticamente.', integrity()),
@@ -183,16 +183,23 @@ function renameNamed(store, row) {
   const isNew = !row.id;
   const name = h('input', { class: 'input', value: row.name || '', maxlength: 80 });
   const fName = field('Nome', name);
+  // Bloco com fonte padrão: ao escolher o bloco num lançamento, a fonte vem junto (ex.: Fatura Nubank → Cartão Nubank).
+  const isBlock = store === 'blocks';
+  const src = isBlock ? h('select', { class: 'select', name: 'blockSource' }, h('option', { value: '' }, 'Nenhuma (escolher em cada lançamento)'),
+    ...repo.list('accounts').filter((a) => !a.archived || a.id === row.sourceId).map((a) => h('option', { value: a.id }, a.name))) : null;
+  if (src) src.value = row.sourceId || '';
+  const fSrc = isBlock ? field('Fonte padrão', src, { hint: 'Preenchida automaticamente nos lançamentos deste bloco; dá para trocar em cada um.' }) : null;
   const save = h('button', { class: 'btn btn-primary', type: 'button', onclick: async () => {
     if (!name.value.trim()) { fName.setError('Informe um nome'); return; }
     try {
-      if (isNew) await repo.createNamed(store, store === 'categories' ? { name: name.value, type: row.type || 'expense' } : { name: name.value });
-      else await repo.saveNamed(store, { ...row, name: name.value });
+      const extra = isBlock ? { sourceId: src.value || null } : {};
+      if (isNew) await repo.createNamed(store, store === 'categories' ? { name: name.value, type: row.type || 'expense' } : { name: name.value, ...extra });
+      else await repo.saveNamed(store, { ...row, name: name.value, ...extra });
       m.close();
     } catch (err) { fName.setError(err.message); }
   } }, isNew ? 'Criar' : 'Salvar');
   name.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') { ev.preventDefault(); save.click(); } });
-  const m = openModal({ title: isNew ? (store === 'categories' ? `Nova categoria de ${row.type === 'income' ? 'receita' : 'despesa'}` : 'Novo bloco') : 'Renomear', size: 'sm', body: fName,
+  const m = openModal({ title: isNew ? (store === 'categories' ? `Nova categoria de ${row.type === 'income' ? 'receita' : 'despesa'}` : 'Novo bloco') : isBlock ? 'Editar bloco' : 'Renomear', size: 'sm', body: isBlock ? h('div', { class: 'stack' }, fName, fSrc) : fName,
     footer: [h('span', { class: 'grow' }), h('button', { class: 'btn', type: 'button', onclick: () => m.close() }, 'Cancelar'), save] });
 }
 

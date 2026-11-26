@@ -126,8 +126,11 @@ export function itemMenu(item, anchor) {
       : { label: income ? 'Marcar como recebido' : 'Marcar como pago', icon: 'check', onSelect: () => toggleStatus(item) },
     tx.status !== 'done' && tx.type !== 'transfer' ? { label: income ? 'Confirmar recebimento…' : 'Confirmar pagamento…', icon: 'edit', onSelect: () => openPayDialog(tx) } : null,
     'sep',
-    canReplicate(tx) ? { label: 'Replicar para outros meses…', icon: 'layers', onSelect: () => openReplicateDialog(tx) } : null,
-    tx.type !== 'transfer' ? { label: 'Duplicar', icon: 'copy', onSelect: () => openDuplicate(tx) } : null,
+    canCopy(tx) ? { label: 'Copiar para o próximo mês', icon: 'arrow-right', onSelect: () => copyToMonth([tx.id], addMonths(monthOfTx(tx), 1)) } : null,
+    canCopy(tx) ? { label: 'Copiar para outro mês…', icon: 'calendar', onSelect: () => openReplicateDialog(tx, { when: 'pick' }) } : null,
+    canReplicate(tx) && canBecomeSeries(tx) ? { label: 'Repetir mensalmente', icon: 'repeat', onSelect: () => repeatMonthly(tx) } : null,
+    tx.type !== 'transfer' ? { label: 'Duplicar neste mês', icon: 'copy', onSelect: () => duplicate(tx, { status: 'planned' }, 'duplicado como previsto') } : null,
+    canReplicate(tx) ? { label: 'Mais opções de replicação…', icon: 'layers', onSelect: () => openReplicateDialog(tx) } : null,
     tx.type !== 'transfer' && tx.status === 'done' ? { label: 'Registrar novamente hoje', icon: 'plus', onSelect: () => duplicate(tx, { date: today(), status: 'done' }, 'registrado novamente hoje') } : null,
     { label: 'Editar', icon: 'edit', onSelect: () => openItem(item) },
     'sep',
@@ -266,14 +269,14 @@ export function sendToCalculator(cents, label) {
 }
 
 /** Pergunta o escopo de uma alteração em ocorrência recorrente. */
-export function askScope({ title, allowAll = true, allowMonth = false }) {
+export function askScope({ title, allowAll = true, allowMonth = false, fixedMonthly = false }) {
   return new Promise((resolve) => {
     let choice = null;
     const opt = (value, label, desc) => h('button', { class: 'scope-opt', type: 'button', dataset: { scope: value }, onclick: () => { choice = value; m.close(); } }, h('strong', null, label), h('span', { class: 'faint small' }, desc));
     const m = openModal({ title, size: 'sm', body: h('div', { class: 'scope-list' },
-      opt('one', 'Apenas esta ocorrência', 'As demais continuam como estão.'),
+      opt('one', fixedMonthly ? 'Somente este mês' : 'Apenas esta ocorrência', fixedMonthly ? 'Os outros meses continuam como estão.' : 'As demais continuam como estão.'),
       allowMonth ? opt('month', 'Somente este mês', 'Todas as ocorrências previstas deste mês; os outros meses não mudam.') : null,
-      opt('future', 'Esta e as próximas', 'Ocorrências anteriores e já pagas não mudam.'),
+      opt('future', fixedMonthly ? 'Este mês e os próximos' : 'Esta e as próximas', 'Meses anteriores e o que já foi pago não mudam.'),
       allowAll ? opt('all', 'Toda a série', 'Inclui as futuras; lançamentos já realizados são preservados.') : null),
     footer: [h('span', { class: 'grow' }), h('button', { class: 'btn', type: 'button', onclick: () => m.close() }, 'Cancelar')], onClose: () => resolve(choice) });
   });
@@ -466,10 +469,94 @@ export function openDuplicate(tx) {
   openEntryForm({ duplicate: true, defaults: { ...rest, date, status: date > today() ? 'planned' : tx.status === 'planned' ? 'planned' : 'done' } });
 }
 
+/** Mês "de referência" do lançamento na lista (competência; para "a definir", o período). */
+export const monthOfTx = (tx) => tx.period && !tx.date ? tx.period : tx.month || monthOf(tx.date);
+/** Pode ser copiado para outro mês como lançamento avulso (parcelas e transferências não). */
+export function canCopy(item) {
+  // Itens de uma recorrência já aparecem sozinhos nos próximos meses: copiar só duplicaria.
+  return Boolean(item) && !item.virtual && !item.forecast && item.type !== 'transfer' && !item.planId && !item.remainderOf && !item.recurrenceId;
+}
+const canBecomeSeries = (tx) => !tx.recurrenceId && !tx.forecastId && !tx.planId && (tx.type === 'expense' || tx.type === 'income');
+
+/**
+ * Copiar para um mês (1 ação): cópia prevista, sem formulário. Se já existir algo igual
+ * no destino, não cria: avisa e oferece ver o existente ou copiar mesmo assim.
+ */
+export async function copyToMonth(ids, month, { force = false, opId = uid() } = {}) {
+  try {
+    const res = await repo.copyTransactionsTo(ids, month, { opId, force });
+    const n = res.created.length;
+    const where = formatMonth(month);
+    const parts = [];
+    if (n) parts.push(n === 1 ? `“${res.created[0].description}” copiado para ${where} como previsto` : `${n} lançamentos copiados para ${where} como previstos`);
+    if (res.conflicts.length) parts.push(res.conflicts.length === 1 ? `“${res.conflicts[0].tx.description}” já está previsto para ${where}` : `${res.conflicts.length} já existiam em ${where} e não foram copiados`);
+    if (res.skipped.length) parts.push(`${res.skipped.length} ignorado(s) (parcelas e transferências seguem o próprio fluxo)`);
+    const actions = [];
+    if (n) actions.push({ label: 'Desfazer', fn: () => repo.deleteTransactions(res.created.map((c) => c.id)).catch(toastError) });
+    if (res.conflicts.length) {
+      actions.push({ label: 'Ver', fn: () => { import('../state.js').then((st) => { st.setMonth(month); location.hash = '#/lancamentos'; }); } });
+      actions.push({ label: 'Copiar mesmo assim', fn: () => copyToMonth(res.conflicts.map((c) => c.tx.id), month, { force: true }) });
+    }
+    toast(parts.join(' · ') || 'Nada para copiar', { tone: n ? 'success' : 'default', actions, timeout: res.conflicts.length ? 8000 : 4000 });
+    return res;
+  } catch (err) { toastError(err); return null; }
+}
+
+/** "Repetir mensalmente" direto: o lançamento vira a 1ª ocorrência de uma série mensal no mesmo dia. */
+export async function repeatMonthly(tx) {
+  try {
+    const rule = await repo.convertToRecurring(tx.id, { frequency: 'monthly', interval: 1, mode: tx.date ? 'fixed' : 'flex', perPeriod: 1 });
+    toast(`“${tx.description}” agora se repete: ${describeFrequency(rule).toLowerCase()}`, { tone: 'success', action: { label: 'Desfazer', fn: () => repo.undoConversion(rule.id, tx).catch(toastError) } });
+  } catch (err) { toastError(err); }
+}
+
+/** Trazer do mês anterior: escolhe o que copiar; recorrências e conflitos já vêm identificados. */
+export function openBringFromPrevious(month) {
+  const prev = addMonths(month, -1);
+  const rows = repo.list('transactions').filter((t) => monthOfTx(t) === prev && t.type !== 'transfer' && !t.remainderOf && !t.forecastId)
+    .sort((a, b) => (a.description || '').localeCompare(b.description || '', 'pt-BR'));
+  const chosen = new Set();
+  const opId = uid();
+  const list = h('div', { class: 'bring-list', role: 'group', 'aria-label': `Lançamentos de ${formatMonth(prev)}` });
+  const entries = rows.map((t) => {
+    const reason = t.planId ? 'parcela: segue o parcelamento' : t.recurrenceId ? 'já se repete todo mês' : repo.conflictIn(t, month) ? `já existe em ${formatMonthShort(month)}` : null;
+    if (!reason) chosen.add(t.id);
+    const cb = h('input', { type: 'checkbox', checked: !reason, disabled: Boolean(t.planId || t.recurrenceId), dataset: { id: t.id } });
+    cb.addEventListener('change', () => { if (cb.checked) chosen.add(t.id); else chosen.delete(t.id); sync(); });
+    return h('label', { class: `bring-row${reason ? ' is-off' : ''}` }, cb,
+      h('span', { class: 'grow truncate' }, t.description, reason ? h('span', { class: 'faint xsmall' }, ` · ${reason}`) : null),
+      h('span', { class: 'num' }, formatMoney(t.plannedAmount || t.amount)));
+  });
+  put(list, ...entries);
+  const go = h('button', { class: 'btn btn-primary', type: 'button' }, 'Trazer');
+  const info = h('p', { class: 'small muted' });
+  const sync = () => {
+    const total = rows.filter((t) => chosen.has(t.id)).reduce((s0, t) => s0 + (t.plannedAmount || t.amount), 0);
+    info.textContent = chosen.size ? `${chosen.size} ${chosen.size === 1 ? 'lançamento' : 'lançamentos'} · ${formatMoney(total)} · entram como previstos em ${formatMonth(month)}` : 'Nada selecionado.';
+    go.disabled = !chosen.size;
+  };
+  const all = h('button', { class: 'link-btn small', type: 'button', onclick: () => { list.querySelectorAll('input:not(:disabled)').forEach((cb) => { cb.checked = true; chosen.add(cb.dataset.id); }); sync(); } }, 'Marcar todos');
+  const none = h('button', { class: 'link-btn small', type: 'button', onclick: () => { list.querySelectorAll('input').forEach((cb) => { cb.checked = false; }); chosen.clear(); sync(); } }, 'Desmarcar');
+  let busy = false;
+  go.addEventListener('click', async () => {
+    if (busy || !chosen.size) return;
+    busy = true; go.classList.add('is-busy');
+    const res = await copyToMonth([...chosen], month, { opId });
+    busy = false; go.classList.remove('is-busy');
+    if (res) m.close();
+  });
+  const m = openModal({ title: `Trazer de ${formatMonth(prev)}`, size: 'md', className: 'bring-modal',
+    body: rows.length ? h('div', { class: 'stack' }, h('div', { class: 'row' }, h('span', { class: 'small faint grow' }, 'Marque o que também vale para este mês.'), all, none), list, info)
+      : h('p', { class: 'muted' }, `Nenhum lançamento em ${formatMonth(prev)}.`),
+    footer: [h('span', { class: 'grow' }), h('button', { class: 'btn', type: 'button', onclick: () => m.close() }, 'Cancelar'), rows.length ? go : null] });
+  sync();
+  return m;
+}
+
 async function duplicate(tx, overrides = {}, verb = 'duplicado') {
   try {
     const copy = await repo.duplicateTransaction(tx.id, overrides);
-    toast(`Lançamento ${verb}`, { tone: 'success', action: { label: 'Editar', fn: () => openEntryForm({ tx: repo.get('transactions', copy.id) }) } });
+    toast(`Lançamento ${verb}`, { tone: 'success', actions: [{ label: 'Editar', fn: () => openEntryForm({ tx: repo.get('transactions', copy.id) }) }, { label: 'Desfazer', fn: () => repo.deleteTransaction(copy.id).catch(toastError) }] });
   } catch (err) { toastError(err); }
 }
 
@@ -589,6 +676,7 @@ export function editSeries(rule, fromDate) {
 }
 
 export function formatAmountShort(c) { return formatMoney(c); }
-rowActions.replicate = (item) => openReplicateDialog(item);
-rowActions.canReplicate = canReplicate;
+// Ação visível na linha: copiar para o próximo mês (1 clique, sem formulário).
+rowActions.replicate = (item) => { const tx = repo.get('transactions', item.id) || item; return copyToMonth([tx.id], addMonths(monthOfTx(tx), 1)); };
+rowActions.canReplicate = canCopy;
 export { MONTHLY_MODES, describeFrequency, currentMonth, lastDay, ui };

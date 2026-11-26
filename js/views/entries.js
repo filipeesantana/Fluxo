@@ -1,15 +1,17 @@
 import { h, icon, debounce, put } from '../utils/dom.js';
 import { formatMoney } from '../utils/money.js';
-import { formatDayHeading, today, formatMonth, formatDateShort, byDateDesc } from '../utils/dates.js';
+import { formatDayHeading, today, formatMonth, formatDateShort, byDateDesc, formatMonthShort, addMonths } from '../utils/dates.js';
+import { toast } from '../components/toast.js';
 import * as repo from '../database/repository.js';
 import { monthItems, expenseValue, NONE } from '../services/finance.js';
 import { fold } from '../services/suggest.js';
 import { openEntryForm } from '../components/entry-form.js';
 import { ui, emitUI, resetEntriesFilter } from '../state.js';
 import { monthNav, pageHead, panel, investRow, txRow, categoryName, blockName, accountName, emptyState, categoryOptions, blockOptions, accountOptions, capitalize, amountText, kindOf } from './common.js';
-import { openItem, itemMenu, toggleStatus } from './actions.js';
+import { openItem, itemMenu, toggleStatus, canCopy, copyToMonth, openBringFromPrevious, monthOfTx } from './actions.js';
 import { getSectionOptions, setSectionOptions, arrangedList, openArrangeDialog, flushLayout } from '../components/layout.js';
 import { openModal } from '../components/modal.js';
+import { openGroupPanel } from './overview.js';
 import { segmented } from '../components/fields.js';
 
 // Colunas da visualização em tabela. Descrição e valor não podem ser ocultados.
@@ -81,6 +83,8 @@ function searchText(t, ctx) {
   return v;
 }
 
+// Seleção de vários lançamentos (copiar em lote). Fica na memória da sessão.
+const sel = { on: false, ids: new Set() };
 let filtersOpen = false; // estado do painel de filtros no celular (mantido entre renderizações)
 
 function filterItems() {
@@ -179,10 +183,26 @@ export function renderEntries(root) {
   const head = pageHead('Lançamentos', { sub: f.scope === 'month' ? 'Movimentações do mês selecionado' : 'Histórico completo de todos os meses', controls: f.scope === 'month' ? monthNav() : null,
     actions: h('button', { class: 'btn btn-sm', type: 'button', title: 'Lista ou tabela, informações e colunas', onclick: () => openViewOptions(rerender) }, icon('sliders', 'icon-sm'), 'Exibição') });
 
+  const prevMonthLabel = formatMonthShort(addMonths(ui.month, -1));
   const summary = h('div', { class: 'list-summary small' },
     h('span', null, `${items.length} ${items.length === 1 ? 'lançamento' : 'lançamentos'}`),
     t.income ? h('span', { class: 'pos num' }, `Receitas ${formatMoney(t.income)}`) : null,
-    t.expense ? h('span', { class: 'num' }, `Despesas ${formatMoney(t.expense)}`) : null);
+    t.expense ? h('span', { class: 'num' }, `Despesas ${formatMoney(t.expense)}`) : null,
+    h('span', { class: 'grow' }),
+    f.scope === 'month' ? h('button', { class: 'btn btn-ghost btn-sm', type: 'button', title: 'Copiar lançamentos do mês anterior para este mês', onclick: () => openBringFromPrevious(ui.month) }, icon('download', 'icon-sm'), `Trazer de ${prevMonthLabel}`) : null,
+    h('button', { class: `btn btn-ghost btn-sm${sel.on ? ' is-on' : ''}`, type: 'button', 'aria-pressed': String(sel.on), onclick: () => { sel.on = !sel.on; sel.ids.clear(); rerender(); } }, icon('check', 'icon-sm'), sel.on ? 'Cancelar seleção' : 'Selecionar'));
+
+  // Linha: em modo de seleção, a caixa de marcação substitui o círculo de pagamento.
+  const row = (it, showDate) => {
+    if (!sel.on) return txRow(it, { onOpen: openItem, onMenu: itemMenu, onToggle: toggleStatus, showDate, fields: vo.fields });
+    const ok = canCopy(it);
+    const toggle = () => { if (!ok) return; if (sel.ids.has(it.id)) sel.ids.delete(it.id); else sel.ids.add(it.id); rerender(); };
+    const r = txRow(it, { onOpen: toggle, showDate, fields: vo.fields });
+    const cb = h('input', { type: 'checkbox', class: 'row-check', checked: sel.ids.has(it.id), disabled: !ok, title: ok ? 'Selecionar' : 'Projeções, parcelas e transferências não são copiadas', 'aria-label': `Selecionar ${it.description}`, onchange: toggle });
+    r.querySelector('.status-spacer')?.replaceWith(h('span', { class: 'row-check-wrap' }, cb));
+    r.classList.toggle('is-selected', sel.ids.has(it.id));
+    return r;
+  };
 
   const list = h('div', { class: 'tx-list', role: 'list' });
   const visible = items.slice(0, shown);
@@ -216,12 +236,15 @@ export function renderEntries(root) {
       const parts = [];
       if (tt.income) parts.push(`+ ${formatMoney(tt.income)}`);
       if (tt.expense) parts.push(`− ${formatMoney(tt.expense)}`);
-      list.append(h('div', { class: 'tx-day' }, h('span', null, capitalize(groupLabel(k))),
+      const field = { category: 'categoryId', block: 'blockId', source: 'sourceId' }[f.groupBy];
+      // Agrupado por bloco, categoria ou fonte: o título abre a "pasta" do grupo (1 clique).
+      const label = field && f.scope === 'month' ? h('button', { class: 'link-plain group-open', type: 'button', title: 'Abrir o grupo', onclick: () => openGroupPanel(field, k, ui.month) }, capitalize(groupLabel(k)), icon('chev-right', 'icon-sm')) : h('span', null, capitalize(groupLabel(k)));
+      list.append(h('div', { class: 'tx-day' }, label,
         parts.length ? h('span', { class: 'tx-day-total', title: f.groupBy === 'day' ? 'Total do dia' : 'Total do grupo' }, parts.join('  ·  ')) : null));
-      for (const it of rows) list.append(txRow(it, { onOpen: openItem, onMenu: itemMenu, onToggle: toggleStatus, showDate: f.groupBy !== 'day', fields: vo.fields }));
+      for (const it of rows) list.append(row(it, f.groupBy !== 'day'));
     }
   } else {
-    for (const it of visible) list.append(txRow(it, { onOpen: openItem, onMenu: itemMenu, onToggle: toggleStatus, showDate: true, fields: vo.fields }));
+    for (const it of visible) list.append(row(it, true));
   }
 
   if (f.type === 'invest') {
@@ -230,10 +253,25 @@ export function renderEntries(root) {
       : emptyState('Nenhum aporte ou resgate', 'Aportes são registrados em Investimentos e não contam como despesa de consumo.', h('a', { class: 'btn', href: '#/investimentos' }, 'Ir para Investimentos'))));
     return;
   }
-  const content = items.length ? [summary, list,
+  // Barra de ações da seleção: destino e confirmação.
+  const selected = [...sel.ids].map((id) => repo.get('transactions', id)).filter(Boolean);
+  const target = h('input', { class: 'input input-sm', type: 'month', name: 'batchMonth', value: addMonths(selected[0] ? monthOfTx(selected[0]) : ui.month, 1), 'aria-label': 'Mês de destino' });
+  const selBar = sel.on ? h('div', { class: 'select-bar', role: 'region', 'aria-label': 'Lançamentos selecionados' },
+    h('strong', { class: 'small' }, `${selected.length} ${selected.length === 1 ? 'selecionado' : 'selecionados'}`),
+    h('span', { class: 'faint small' }, selected.length ? formatMoney(selected.reduce((a, x) => a + (x.plannedAmount || x.amount), 0)) : 'toque nos lançamentos'),
+    h('span', { class: 'grow' }),
+    h('label', { class: 'inline-field small' }, 'Copiar para', target),
+    h('button', { class: 'btn btn-primary btn-sm', type: 'button', disabled: !selected.length, name: 'batchCopy', onclick: async () => {
+      if (!/^\d{4}-\d{2}$/.test(target.value)) { toast('Escolha o mês de destino', { tone: 'error' }); return; }
+      const res = await copyToMonth(selected.map((x) => x.id), target.value);
+      if (res) { sel.on = false; sel.ids.clear(); rerender(); }
+    } }, 'Copiar')) : null;
+  const content = items.length ? [summary, list, selBar,
     items.length > shown ? h('button', { class: 'btn btn-block load-more', type: 'button', onclick: () => { shown += PAGE * 2; emitUI('filter'); } }, `Mostrar mais (${items.length - shown} restantes)`) : null]
     : [emptyState(active.length ? 'Nada encontrado com estes filtros' : 'Nenhum lançamento', active.length ? null : f.scope === 'month' ? `Não há movimentações em ${formatMonth(ui.month)}.` : 'Registre o primeiro lançamento.',
-      active.length ? h('button', { class: 'btn', type: 'button', onclick: () => { resetEntriesFilter(); emitUI('filter'); } }, 'Limpar filtros') : h('button', { class: 'btn btn-primary', type: 'button', onclick: () => openEntryForm() }, icon('plus'), 'Novo lançamento'))];
+      active.length ? h('button', { class: 'btn', type: 'button', onclick: () => { resetEntriesFilter(); emitUI('filter'); } }, 'Limpar filtros')
+        : h('div', { class: 'row wrap', style: 'justify-content:center' }, h('button', { class: 'btn btn-primary', type: 'button', onclick: () => openEntryForm() }, icon('plus'), 'Novo lançamento'),
+          f.scope === 'month' ? h('button', { class: 'btn', type: 'button', onclick: () => openBringFromPrevious(ui.month) }, icon('download', 'icon-sm'), `Trazer de ${prevMonthLabel}`) : null))];
 
   const hadFocus = document.activeElement?.id === 'entries-search';
   const caret = hadFocus ? document.activeElement.selectionStart : null;

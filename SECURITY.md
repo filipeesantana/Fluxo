@@ -50,7 +50,7 @@ object-src 'none'; base-uri 'none'; form-action 'none'
 
 ## Armazenamento
 
-- **IndexedDB** (`guia-financeiro.pessoal`, esquema v4): todos os dados financeiros, recorrências e compromissos, cálculos salvos (`calculations`), preferências financeiras e a personalização das telas (chave `ui.layout`, separada dos dados). O nome não mudou desde a 1.0 para não perder dados existentes; migrações só acrescentam.
+- **IndexedDB** (`guia-financeiro.pessoal`, esquema v4): todos os dados financeiros, recorrências e compromissos, cálculos salvos (`calculations`), modelos de lançamento (chave `templates`, validados um a um, no máximo 60, e incluídos no backup), preferências financeiras e a personalização das telas (chave `ui.layout`, separada dos dados). O nome não mudou desde a 1.0 para não perder dados existentes; migrações só acrescentam.
 - **localStorage** (`gf.*`): apenas preferências de exibição (tema, densidade, movimento, menu recolhido, posição da calculadora, adiamento do lembrete de backup). O histórico temporário da calculadora fica no `sessionStorage` e some ao fechar a aba. Nunca dados financeiros, e não há fallback para localStorage se o IndexedDB falhar: nesse caso o app informa o erro e não grava nada.
 - O app pede **armazenamento persistente** (`navigator.storage.persist`). O resultado aparece em *Configurações → Armazenamento*.
 
@@ -62,7 +62,7 @@ object-src 'none'; base-uri 'none'; form-action 'none'
   "version": 3,
   "backupId": "uuid",
   "createdAt": "ISO 8601",
-  "appVersion": "3.1.1",
+  "appVersion": "3.2.0",
   "schemaVersion": 4,
   "counts": { "transactions": 0, ... },
   "period": { "from": "AAAA-MM-DD", "to": "AAAA-MM-DD" } | null,

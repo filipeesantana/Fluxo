@@ -3,6 +3,7 @@ import { formatMoney } from '../utils/money.js';
 import { formatMonth, formatDateShort, currentMonth, monthDiff, formatMonthShort, today } from '../utils/dates.js';
 import * as repo from '../database/repository.js';
 import { NONE } from '../services/finance.js';
+import { fold } from '../services/suggest.js';
 import { isCard, dueDateOf } from '../services/cards.js';
 import { ui, shiftMonth, goToday, setMonth } from '../state.js';
 
@@ -62,8 +63,41 @@ export async function createCategory(type, name) {
   const c = await repo.createNamed('categories', { name, type: type === 'income' ? 'income' : 'expense' });
   return { value: c.id, label: c.name, color: colorOf(c.id) };
 }
-export async function createBlock(name) {
-  const b = await repo.createNamed('blocks', { name });
+/**
+ * Fonte de um bloco: a vinculada no bloco ou, sem vínculo, a única fonte usada
+ * em todos os lançamentos dele (aprendida do histórico, mínimo de 2). Nunca inventa.
+ */
+export function blockSource(blockId) {
+  const b = blockId ? repo.get('blocks', blockId) : null;
+  if (!b) return null;
+  const linked = b.sourceId ? repo.get('accounts', b.sourceId) : null;
+  if (linked && !linked.archived) return { account: linked, how: 'linked' };
+  const used = new Set();
+  let n = 0;
+  for (const t of repo.list('transactions')) {
+    if (t.blockId !== blockId || t.type === 'transfer') continue;
+    n++;
+    used.add(t.sourceId || '');
+    if (used.size > 1) return null;
+  }
+  const only = [...used][0];
+  const acc = n >= 2 && only ? repo.get('accounts', only) : null;
+  return acc && !acc.archived ? { account: acc, how: 'history' } : null;
+}
+
+/** Fonte sugerida pelo nome do bloco ("Fatura Nubank" → conta ou cartão "Nubank"), só quando há exatamente uma. */
+export function guessSourceForName(name) {
+  const STOP = new Set(['fatura', 'cartao', 'conta', 'de', 'do', 'da', 'credito', 'debito', 'banco']);
+  const tokens = fold(name).split(/[^a-z0-9]+/).filter((w) => w.length >= 2 && !STOP.has(w));
+  if (!tokens.length) return null;
+  const hits = repo.list('accounts').filter((a) => !a.archived && tokens.every((w) => fold(a.name).split(/[^a-z0-9]+/).includes(w)));
+  return hits.length === 1 ? hits[0] : null;
+}
+
+/** Cria um bloco já vinculado à fonte informada ou à única fonte com o mesmo nome. */
+export async function createBlock(name, { sourceId } = {}) {
+  const src = sourceId || guessSourceForName(name)?.id || null;
+  const b = await repo.createNamed('blocks', src ? { name, sourceId: src } : { name });
   return { value: b.id, label: b.name, color: colorOf(b.id) };
 }
 
@@ -172,7 +206,7 @@ export function txRow(item, { onOpen, onMenu, onToggle, showDate = false, fields
       h('span', { class: `tx-amount num ${item.type === 'income' ? 'is-income' : item.type === 'refund' ? 'is-refund' : item.type === 'transfer' ? 'is-neutral' : ''}` }, amountText(item)),
     ),
     onMenu ? h('span', { class: 'tx-actions' },
-      rowActions.replicate && rowActions.canReplicate?.(item) ? h('button', { class: 'btn btn-ghost btn-icon btn-sm tx-act tx-rep', type: 'button', title: 'Replicar para outros meses', 'aria-label': `Replicar “${item.description}” para outros meses`, onclick: (ev) => { ev.stopPropagation(); rowActions.replicate(item); } }, icon('layers')) : null,
+      rowActions.replicate && rowActions.canReplicate?.(item) ? h('button', { class: 'btn btn-ghost btn-icon btn-sm tx-act tx-rep', type: 'button', title: 'Copiar para o próximo mês', 'aria-label': `Copiar “${item.description}” para o próximo mês`, onclick: (ev) => { ev.stopPropagation(); rowActions.replicate(item); } }, icon('copy')) : null,
       h('button', { class: 'btn btn-ghost btn-icon btn-sm tx-act tx-more', type: 'button', title: 'Mais ações', 'aria-label': `Ações de ${item.description}`, 'aria-haspopup': 'menu', onclick: (ev) => { ev.stopPropagation(); onMenu(item, ev.currentTarget); } }, icon('more'))) : null,
   );
 }

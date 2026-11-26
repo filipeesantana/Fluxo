@@ -1,15 +1,16 @@
 import { h, icon } from '../utils/dom.js';
 
-export function toast(message, { action, tone = 'default', timeout = 3600 } = {}) {
+export function toast(message, { action, actions, tone = 'default', timeout = 3600 } = {}) {
+  const acts = [...(actions || []), ...(action ? [action] : [])].filter(Boolean);
   const host = document.getElementById('toasts');
   const el = h('div', { class: `toast toast-${tone}` },
     tone === 'error' ? icon('alert', 'icon-sm') : tone === 'success' ? icon('check', 'icon-sm') : null,
     h('span', { class: 'grow' }, message),
-    action ? h('button', { class: 'link-btn', type: 'button', onclick: () => { action.fn(); dismiss(); } }, action.label) : null,
+    ...acts.map((a) => h('button', { class: 'link-btn', type: 'button', onclick: () => { a.fn(); dismiss(); } }, a.label)),
   );
   host.append(el);
   requestAnimationFrame(() => el.classList.add('is-in'));
-  const t = setTimeout(dismiss, action ? Math.max(timeout, 6000) : timeout);
+  const t = setTimeout(dismiss, acts.length ? Math.max(timeout, 6000) : timeout);
   function dismiss() {
     clearTimeout(t);
     el.classList.remove('is-in');

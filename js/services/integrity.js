@@ -115,6 +115,9 @@ export function auditData(data) {
       if (!ruleOccurrences({ ...r, exceptions: {} }, from, to).some((o) => o.key === key)) add('recurrence', 'warn', `Ocorrência prevista de “${t.description}” fora das datas da regra`, [t.id]);
     }
   }
+  for (const b of data.blocks || []) {
+    if (b.sourceId && !accounts.has(b.sourceId)) add('ref', 'warn', `Bloco “${b.name}” aponta para uma fonte inexistente`, []);
+  }
   for (const r of rules.values()) {
     if (r.endDate && r.endDate < r.startDate) add('recurrence', 'error', `Recorrência “${r.description}” termina antes de começar`, []);
     if (r.sourceId && !accounts.has(r.sourceId)) add('recurrence', 'warn', `Recorrência “${r.description}” aponta para conta inexistente`, []);

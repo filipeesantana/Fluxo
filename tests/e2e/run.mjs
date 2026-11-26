@@ -69,25 +69,26 @@ async function openForm(page) {
 }
 
 /**
- * "Repetir" (3.1.1): Não repetir | Mensal | Personalizar.
+ * Repetição (3.2): uma lista (Não repetir · Semanalmente · A cada 14 dias · Mensalmente ·
+ * Anualmente · Personalizar), o "Dia" ao lado no mensal e o resto em "Mais opções de repetição".
  * mode: fixed · days (dias fixos) · flex (datas a definir) · forecast (previsão de gasto).
  */
 async function setRepeat(m, { preset = 'monthly', mode, perMonth, days, end, day } = {}) {
   const box = m.locator('.repeat-box');
-  if (['weekly', 'biweekly', 'yearly'].includes(preset)) {
-    await m.locator('.repeat-seg [data-value="custom"]').click();
-    await box.locator(`[aria-label="Frequência"] [data-value="${preset}"]`).click();
-  } else await m.locator(`.repeat-seg [data-value="${preset}"]`).click();
+  await m.locator('select[name=repeat]').selectOption(preset);
+  const more = async () => { if (!(await box.locator('details.repeat-options').evaluate((d) => d.open))) await box.locator('.repeat-options > summary').click(); };
   if (mode === 'flex') {
+    await more();
     await box.locator('input[name=repeatTimes]').fill(perMonth || '1');
     await box.locator('[aria-label="Datas"] [data-value="tbd"]').click();
   } else if (mode === 'days') {
+    await more();
     await box.locator('input[name=repeatTimes]').fill(String(days.split(',').length));
     await box.locator('[aria-label="Datas"] [data-value="day"]').click();
     await box.locator('input[name=repeatDays]').fill(days);
-  } else if (mode === 'forecast') await box.locator('input[name=repeatForecast]').check();
-  if (day) await box.locator('input[name=repeatDay]').fill(String(day));
-  if (end) { await box.locator('.repeat-options summary').click(); await box.locator('input[name=repeatEnd]').fill(end); }
+  } else if (mode === 'forecast') { await more(); await box.locator('input[name=repeatForecast]').check(); }
+  if (day) await m.locator('input[name=repeatDay]').fill(String(day));
+  if (end) { await more(); await box.locator('input[name=repeatEnd]').fill(end); }
 }
 
 /** Seletor pesquisável: abre, digita e confirma com Enter. */
@@ -601,7 +602,7 @@ async function run() {
     const m = page.locator('.entry-modal');
     await m.locator('input[name=amount]').fill('45');
     await m.locator('.modal-foot button[type=submit]').click();
-    await page.locator('.scope-opt', { hasText: 'Apenas esta ocorrência' }).click();
+    await page.locator('.scope-opt', { hasText: 'Somente este mês' }).click();
     await m.waitFor({ state: 'detached' });
     await expectKpi(page, 'Compromissos pendentes', 'R$ 45,00');
     await page.keyboard.press('ArrowRight');
@@ -655,14 +656,15 @@ async function run() {
     await expectKpi(page, 'Despesas realizadas', 'R$ 60,00');
     await page.locator('.tx-row', { hasText: /^.*Show$/ }).first();
     await page.locator('.tx-row').filter({ hasNotText: 'Reembolso' }).locator('.tx-more').click();
-    await page.locator('.menu-item', { hasText: 'Duplicar' }).click();
-    // 3.1.1: Duplicar abre a cópia preenchida; nada é gravado antes de Salvar.
-    const dm = page.locator('.entry-modal');
-    await dm.waitFor();
-    eq(await dm.locator('input[name=description]').inputValue(), 'Show', 'cópia preenchida');
-    await save(dm);
+    await page.locator('.menu-item', { hasText: 'Duplicar neste mês' }).click();
+    // 3.2: Duplicar neste mês cria a cópia direto, como prevista (o pago não é copiado).
+    await expectKpi(page, 'Compromissos pendentes', 'R$ 100,00');
+    await expectKpi(page, 'Despesas realizadas', 'R$ 60,00');
+    const dupId = await api(page, (repo) => repo.list('transactions').find((t) => t.description === 'Show' && t.status === 'planned').id);
+    const dupRow = page.locator(`.tx-row[data-id="${dupId}"]`).first();
+    await dupRow.locator('.status-btn').click();
     await expectKpi(page, 'Despesas realizadas', 'R$ 160,00');
-    const dupRow = page.locator('.tx-row').filter({ hasNotText: 'Reembolso' }).first();
+    await page.waitForTimeout(800); // trava contra clique duplo no círculo (700 ms)
     await dupRow.locator('.status-btn').click();
     await expectKpi(page, 'Compromissos pendentes', 'R$ 100,00');
     await dupRow.locator('.tx-more').click();
@@ -1283,7 +1285,7 @@ async function run() {
     const m = page.locator('.entry-modal');
     await m.locator('input[name=amount]').fill('44,90');
     await m.locator('.modal-foot button[type=submit]').click();
-    await page.locator('.scope-opt', { hasText: 'Esta e as próximas' }).click();
+    await page.locator('.scope-opt', { hasText: 'Este mês e os próximos' }).click();
     await m.waitFor({ state: 'detached' });
     const amounts = await api(page, async (repo) => {
       const { summarize } = await import('./js/services/finance.js');
@@ -1879,9 +1881,9 @@ async function run() {
   await test('3.1 — Cenário 6: replicar para três meses específicos (previstas, sem herdar o pago)', async () => {
     const { context, page } = await newPage();
     await api(page, (repo) => repo.saveTransaction({ id: 'r0', type: 'expense', status: 'done', amount: 12000, date: '2026-11-08', description: 'Manutenção' }));
-    await page.locator('.tx-row', { hasText: 'Manutenção' }).locator('.tx-rep').click();
+    await page.locator('.tx-row', { hasText: 'Manutenção' }).locator('.tx-more').click();
+    await page.locator('.menu-item', { hasText: 'Copiar para outro mês' }).click();
     const m = page.locator('.replicate-modal');
-    await m.locator('[data-when="pick"]').click();
     for (const mm of ['2027-01', '2027-03', '2027-05']) await m.locator(`.month-pick[data-month="${mm}"]`).click();
     await waitText(page, () => m.locator('.replicate-summary').textContent().then(norm), /3 lançamentos previstos serão criados/);
     await m.getByRole('button', { name: 'Replicar' }).dblclick();
@@ -2200,8 +2202,8 @@ async function run() {
     await page.locator('.tabbar .tab-add').click();
     const m = page.locator('.entry-modal');
     await m.waitFor();
-    await m.locator('.repeat-seg [data-value="monthly"]').click();
-    assert(await inView('.entry-modal .repeat-box input[name=repeatTimes]'), 'opções de repetição legíveis');
+    await m.locator('select[name=repeat]').selectOption('monthly');
+    assert(await inView('.entry-modal input[name=repeatDay]'), 'repetição e dia legíveis');
     assert(await inView('.entry-modal .modal-foot button[type=submit]'), 'botão salvar visível');
     for (const r of ['visao-geral', 'lancamentos', 'planejamento/compromissos', 'planejamento/calendario', 'investimentos', 'configuracoes']) {
       await page.keyboard.press('Escape');
@@ -2216,7 +2218,7 @@ async function run() {
   await test('3.1 — Cenário 22: assinatura institucional fixa, com a versão central, em todos os modos', async () => {
     const { context, page } = await newPage();
     const version = await page.evaluate(async () => (await import('./js/version.js')).APP_VERSION);
-    eq(version, '3.1.1', 'versão');
+    eq(version, '3.2.0', 'versão');
     await waitText(page, '.sidebar .signature', `Desenvolvido por Filipe Santana FS v${version}`);
     assert(await page.locator('.sidebar .signature .sig-by').isVisible(), 'visível no desktop');
     await page.getByRole('button', { name: 'Personalizar' }).click();
@@ -2281,12 +2283,12 @@ async function run() {
     await m.locator('input[name=date]').fill('2026-11-10');
     await pick(m, 'source', 'Conta Pix');
     await m.locator('select[name=method]').selectOption('pix', { force: true }).catch(() => {});
-    await j.tap(m.locator('.repeat-seg [data-value="monthly"]'));
+    await m.locator('select[name=repeat]').selectOption('monthly'); // 1 seleção
     assert(/Mensal, dia 10/.test(norm(await m.locator('.repeat-summary').textContent())), 'Mensal já configurado no dia da data, sem término');
     await j.tap(m.locator('.modal-foot button[type=submit]'));
     await m.waitFor({ state: 'detached' });
-    eq(j.count, 3, 'abrir + Mensal + Salvar');
-    metrics.push('Despesa mensal nova: 3 cliques (abrir, Mensal, Salvar)');
+    eq(j.count + 1, 3, 'abrir + Mensalmente + Salvar');
+    metrics.push('Despesa mensal nova: abrir, Mensalmente (1 seleção), Salvar');
     await page.goto(`${base}#/lancamentos`);
     for (const mm of ['Dezembro de 2026', 'Janeiro de 2027', 'Fevereiro de 2027']) {
       await nextMonth(page);
@@ -2300,28 +2302,32 @@ async function run() {
     await context.close();
   });
 
-  await test('3.1.1 — Teste 2: Replicar (botão da linha) → Próximos 3 meses → Replicar; original único e pago não copiado', async () => {
+  await test('3.1.1/3.2 — Teste 2/6: copiar para o próximo mês em 1 clique; 3 meses pelo menu; original único e pago não copiado', async () => {
     const { context, page } = await newPage();
     await api(page, (repo) => repo.saveTransaction({ id: 'acad', type: 'expense', status: 'done', amount: 5000, date: '2026-11-20', description: 'Academia' }));
     await page.goto(`${base}#/lancamentos`);
+    // 3.2: copiar para o próximo mês é uma ação direta (1 clique, sem formulário).
+    const j0 = journey();
+    await j0.tap(listRows(page, 'Academia').locator('.tx-rep'));
+    await waitText(page, async () => (await monthCount(page, 'Academia', ['2026-12']))[0], 'planned:2026-12-20');
+    eq(j0.count, 1, 'Copiar para o próximo mês em 1 clique');
+    metrics.push('Copiar para o próximo mês: 1 clique (3.1.1: 2; 3.1.0: 3)');
+    // Segunda vez: já existe em dezembro → não duplica, avisa.
+    await listRows(page, 'Academia').locator('.tx-rep').click();
+    await waitText(page, () => page.locator('.toast').last().textContent().then(norm), /já está previsto para dezembro/);
+    eq(await api(page, (repo) => repo.list('transactions').length), 2, 'conflito não cria outra cópia');
+    await api(page, async (repo) => { for (const t of repo.list('transactions')) if (t.id !== 'acad') await repo.deleteTransaction(t.id); });
     const j = journey();
-    await j.tap(listRows(page, 'Academia').locator('.tx-rep'));
+    await j.tap(listRows(page, 'Academia').locator('.tx-more'));
+    await j.tap(page.locator('.menu-item', { hasText: 'Mais opções de replicação' }));
     const m = page.locator('.replicate-modal');
     await j.tap(m.locator('[data-when="3"]'));
     await waitText(page, () => m.locator('.replicate-summary').textContent().then(norm), /^3 lançamentos previstos serão criados/);
     await j.tap(m.getByRole('button', { name: 'Replicar' }));
     await m.waitFor({ state: 'detached' });
-    eq(j.count, 3, 'Replicar + Próximos 3 + Replicar');
-    metrics.push('Replicar para 3 meses: 3 cliques (antes: passar o mouse para revelar ⋯, ⋯, Replicar…, Próximos 3, Replicar = 4)');
+    eq(j.count, 4, '⋯ + Mais opções + Próximos 3 + Replicar');
     const rows = await api(page, (repo) => repo.list('transactions').map((t) => [t.id === 'acad' ? 'original' : 'copia', t.date, t.status]).sort((a, b) => a[1].localeCompare(b[1])));
     eq(JSON.stringify(rows), JSON.stringify([['original', '2026-11-20', 'done'], ['copia', '2026-12-20', 'planned'], ['copia', '2027-01-20', 'planned'], ['copia', '2027-02-20', 'planned']]), 'três cópias previstas e o original intacto');
-    // Próximo mês com o padrão já escolhido: Replicar → Replicar.
-    await page.locator('.toast .link-btn', { hasText: 'Desfazer' }).last().click();
-    await waitText(page, async () => String(await api(page, (repo) => repo.list('transactions').length)), '1');
-    await listRows(page, 'Academia').locator('.tx-rep').click();
-    await m.getByRole('button', { name: 'Replicar' }).click();
-    await m.waitFor({ state: 'detached' });
-    eq(JSON.stringify(await monthCount(page, 'Academia', ['2026-12', '2027-01'])), JSON.stringify(['planned:2026-12-20', '']), 'Próximo mês em 2 cliques');
     await noErrors(page);
     await context.close();
   });
@@ -2335,14 +2341,11 @@ async function run() {
     });
     await page.goto(`${base}#/lancamentos`);
     const j = journey();
-    await j.tap(listRows(page, 'Streaming').locator('.tx-rep'));
-    const m = page.locator('.replicate-modal');
-    await j.tap(m.locator('[data-when="all"]'));
-    await waitText(page, () => m.locator('.replicate-summary').textContent().then(norm), /Repete todo mês no dia 5, a partir de novembro de 2026, sem data de término/);
-    await j.tap(m.getByRole('button', { name: 'Repetir todo mês' }));
-    await m.waitFor({ state: 'detached' });
-    eq(j.count, 3, 'Replicar + Todos os meses + Confirmar');
-    metrics.push('Transformar em mensal pela linha: 3 cliques (antes: ⋯ escondido, Transformar em recorrente…, Transformar = 3, com o botão invisível até passar o mouse)');
+    await j.tap(listRows(page, 'Streaming').locator('.tx-more'));
+    await j.tap(page.locator('.menu-item', { hasText: 'Repetir mensalmente' }));
+    await waitText(page, () => page.locator('.toast').last().textContent().then(norm), /agora se repete: mensal, dia 5/);
+    eq(j.count, 2, '⋯ + Repetir mensalmente');
+    metrics.push('Transformar em mensal pela linha: 2 cliques (3.1.1: 3)');
     eq(JSON.stringify(await monthCount(page, 'Streaming', ['2026-11', '2026-12', '2027-06'])), JSON.stringify(['done:2026-11-05', 'planned:2026-12-05', 'planned:2027-06-05']), 'original é a 1ª ocorrência; meses seguintes previstos');
     eq(await api(page, (repo) => repo.list('transactions').filter((t) => t.description === 'Streaming').length), 1, 'nenhuma cópia gravada');
     // Pela edição: clicar no lançamento → Mensal → Salvar.
@@ -2350,10 +2353,10 @@ async function run() {
     await k.tap(listRows(page, 'Almoço').locator('.tx-main'));
     const e = page.locator('.entry-modal');
     await settled(e);
-    await k.tap(e.locator('.repeat-seg [data-value="monthly"]'));
+    await e.locator('select[name=repeat]').selectOption('monthly');
     await k.tap(e.locator('.modal-foot button[type=submit]'));
     await e.waitFor({ state: 'detached' });
-    eq(k.count, 3, 'lançamento + Mensal + Salvar');
+    eq(k.count + 1, 3, 'lançamento + Mensalmente + Salvar');
     eq(JSON.stringify(await monthCount(page, 'Almoço', ['2026-11', '2026-12'])), JSON.stringify(['planned:2026-11-28', 'planned:2026-12-28']), 'benefício (VR) também se repete');
     eq(await api(page, (repo) => repo.list('transactions').filter((t) => t.description === 'Almoço').length), 1, 'sem segunda movimentação');
     await noErrors(page);
@@ -2514,7 +2517,8 @@ async function run() {
     for (let i = 0; i < 4; i++) await page.keyboard.press('Control+Enter');
     await m2.waitFor({ state: 'detached' });
     await page.goto(`${base}#/lancamentos`);
-    await listRows(page, 'Farmácia').locator('.tx-rep').click();
+    await listRows(page, 'Farmácia').locator('.tx-more').click();
+    await page.locator('.menu-item', { hasText: 'Mais opções de replicação' }).click();
     const rm = page.locator('.replicate-modal');
     await rm.locator('[data-when="3"]').click();
     await rm.getByRole('button', { name: 'Replicar' }).dblclick();
@@ -2623,11 +2627,302 @@ async function run() {
     await waitText(page, async () => String(await listRows(page, 'Almoço').count()), '0');
     await page.locator('.toast .link-btn', { hasText: 'Desfazer' }).last().click();
     await waitText(page, async () => String(await listRows(page, 'Almoço').count()), '1');
-    for (const line of metrics) console.log(`      ${line}`);
     await noErrors(page);
     await context.close();
   });
 
+  // ——————————————————— Fluxo 3.2 — formulário universal e fluxo inteligente ———————————————————
+  const seedNubank = (page) => api(page, async (repo) => {
+    await repo.createNamed('accounts', { name: 'Cartão Nubank', kind: 'credit', closingDay: 28, dueDay: 7 });
+    await repo.createNamed('accounts', { name: 'Conta', kind: 'checking' });
+  });
+  const txs = (page, desc) => api(page, (repo, d) => repo.list('transactions').filter((t) => !d || t.description === d).map((t) => ({ id: t.id, date: t.date, month: t.month, status: t.status, amount: t.amount, blockId: t.blockId, categoryId: t.categoryId, sourceId: t.sourceId, recurrenceId: t.recurrenceId || null })), desc);
+  async function spotify(page, j = journey()) {
+    await j.tap(page.locator('.sidebar [data-action="new-entry"]'));
+    const m = page.locator('.entry-modal');
+    await settled(m);
+    await m.locator('input[name=description]').fill('Spotify');
+    await m.locator('input[name=amount]').fill('31,90');
+    await m.locator('select[name=repeat]').selectOption('monthly');
+    await m.locator('input[name=repeatDay]').fill('5');
+    await createInline(m, 'block', 'Fatura Nubank');
+    await createInline(m, 'category', 'Assinaturas');
+    await waitText(page, () => m.locator('.source-hint').textContent().then(norm), /Cartão Nubank — preenchida pelo bloco/);
+    eq(norm(await m.locator('[data-picker="source"] .picker-value').textContent()), 'Cartão Nubank', 'fonte identificada pelo bloco');
+    await j.tap(m.locator('.modal-foot button[type=submit]'));
+    await m.waitFor({ state: 'detached' });
+    return j;
+  }
+
+  await test('3.2 — Teste 1 (Spotify): Despesa · Spotify · R$ 31,90 · Mensalmente dia 5 · Fatura Nubank · Assinaturas → Salvar. Fonte, recorrência, fatura e indicadores sem passo extra', async () => {
+    const { context, page } = await newPage();
+    await seedNubank(page);
+    const j = await spotify(page);
+    eq(j.count, 2, 'abrir + Salvar (o resto é digitação e seleção)');
+    const r = await api(page, async (repo) => {
+      const { summarize } = await import('./js/services/finance.js');
+      const ctx = repo.context();
+      const nu = repo.list('accounts').find((a) => a.name === 'Cartão Nubank');
+      const block = repo.list('blocks').find((b) => b.name === 'Fatura Nubank');
+      const rules = repo.list('recurrences');
+      const bill = (m) => summarize(ctx, m).cardBills.find((b) => b.cardId === nu.id)?.total || 0;
+      const spot = (m) => summarize(ctx, m).items.filter((i) => i.description === 'Spotify').map((i) => `${i.status}:${i.date}`);
+      return { blockLinked: block.sourceId === nu.id, rules: rules.map((x) => [x.description, x.amount, x.frequency, x.anchorDay, x.sourceId === nu.id, x.blockId === block.id, Boolean(x.categoryId)]),
+        tx: repo.list('transactions').map((t) => [t.date, t.status, t.month, t.sourceId === nu.id]),
+        dec: spot('2026-12'), jan: spot('2027-01'), feb: spot('2027-02'), bills: ['2026-12', '2027-01', '2027-02'].map(bill), expDec: summarize(ctx, '2026-12').expenseTotal };
+    });
+    eq(r.blockLinked, true, 'bloco criado no formulário já vinculado ao cartão');
+    eq(JSON.stringify(r.rules), JSON.stringify([['Spotify', 3190, 'monthly', 5, true, true, true]]), 'uma recorrência mensal no dia 5, com fonte, bloco e categoria');
+    eq(JSON.stringify(r.tx), JSON.stringify([['2026-11-05', 'done', '2026-12', true]]), 'a 1ª ocorrência (05/11, já passou) registrada uma única vez, na fatura de dezembro');
+    eq(JSON.stringify([r.dec, r.jan, r.feb]), JSON.stringify([['done:2026-11-05'], ['planned:2026-12-05'], ['planned:2027-01-05']]), 'próximos meses projetados como previstos, um por fatura');
+    eq(JSON.stringify(r.bills), JSON.stringify([3190, 3190, 3190]), 'faturas atualizadas');
+    eq(r.expDec, 3190, 'indicadores atualizados (sem duplicar)');
+    metrics.push('Spotify mensal no cartão: 2 cliques (abrir, Salvar) + digitação, 1 seleção (Mensalmente) e 2 escolhas (bloco e categoria); fonte e fatura automáticas');
+    await noErrors(page);
+    await context.close();
+  });
+
+  await test('3.2 — Testes 2 e 4: abrir o bloco Fatura Nubank, adicionar iCloud (fonte e bloco preenchidos) e mais 4 com "Salvar e adicionar outro"', async () => {
+    const { context, page } = await newPage();
+    await seedNubank(page);
+    await spotify(page);
+    await page.goto(`${base}#/`);
+    await nextMonth(page); // dezembro: compras de novembro na fatura de dezembro
+    const bar = page.locator('.panel', { has: page.locator('h2', { hasText: 'Por bloco' }) }).locator('.bar-row', { hasText: 'Fatura Nubank' });
+    await bar.click();
+    const drawer = page.locator('.group-drawer');
+    await drawer.waitFor();
+    await drawer.getByRole('button', { name: 'Adicionar lançamento' }).click();
+    const m = page.locator('.entry-modal');
+    await settled(m);
+    eq(norm(await m.locator('[data-picker="block"] .picker-value').textContent()), 'Fatura Nubank', 'bloco preenchido');
+    eq(norm(await m.locator('[data-picker="source"] .picker-value').textContent()), 'Cartão Nubank', 'fonte preenchida');
+    await m.locator('input[name=date]').fill('2026-11-25');
+    await m.locator('input[name=description]').fill('iCloud');
+    await m.locator('input[name=amount]').fill('19,90');
+    await pick(m, 'category', 'Assinaturas');
+    await save(m);
+    const total = async () => api(page, async (repo) => {
+      const { summarize } = await import('./js/services/finance.js');
+      const b = repo.list('blocks').find((x) => x.name === 'Fatura Nubank');
+      return summarize(repo.context(), '2026-12').items.filter((i) => i.blockId === b.id).reduce((s, i) => s + i.amount, 0);
+    });
+    eq(await total(), 5180, 'Spotify + iCloud = R$ 51,80 na fatura de dezembro');
+    // Cadastro consecutivo dentro do bloco.
+    await page.locator('.bar-row', { hasText: 'Fatura Nubank' }).first().click();
+    await drawer.waitFor();
+    await waitText(page, () => drawer.locator('.kv-strong .kv-value').textContent().then(norm), 'R$ 51,80');
+    await drawer.getByRole('button', { name: 'Adicionar lançamento' }).click();
+    const list = [['Amazon Prime', '19,90'], ['Microsoft 365', '45,00'], ['Duolingo', '14,90'], ['Canva', '34,90'], ['YouTube', '24,90']];
+    for (const [i, [d, v]] of list.entries()) {
+      const f = page.locator('.entry-modal');
+      await settled(f);
+      if (i === 0) { await f.locator('input[name=date]').fill('2026-11-26'); await pick(f, 'category', 'Assinaturas'); }
+      else {
+        assert(/Mantidos: Fatura Nubank · Assinaturas · Cartão Nubank/.test(norm(await f.locator('.kept-note').textContent())), 'contexto mantido e indicado');
+        eq(await f.locator('input[name=description]').evaluate((el) => document.activeElement === el && el.value === ''), true, 'descrição limpa e com foco');
+        eq(await f.locator('input[name=amount]').inputValue(), '', 'valor limpo');
+      }
+      await f.locator('input[name=description]').fill(d);
+      await f.locator('input[name=amount]').fill(v);
+      if (i < list.length - 1) await f.getByRole('button', { name: 'Salvar e adicionar outro' }).click();
+      else await save(f);
+      await waitText(page, async () => String((await txs(page, d)).length), '1');
+    }
+    const five = await api(page, (repo) => {
+      const b = repo.list('blocks').find((x) => x.name === 'Fatura Nubank');
+      const nu = repo.list('accounts').find((a) => a.name === 'Cartão Nubank');
+      return repo.list('transactions').filter((t) => ['Amazon Prime', 'Microsoft 365', 'Duolingo', 'Canva', 'YouTube'].includes(t.description))
+        .map((t) => [t.description, t.blockId === b.id, t.sourceId === nu.id, Boolean(t.categoryId), Boolean(t.recurrenceId)]);
+    });
+    eq(five.length, 5, 'cinco lançamentos');
+    eq(new Set(five.map((x) => x[0])).size, 5, 'independentes');
+    assert(five.every((x) => x[1] && x[2] && x[3] && !x[4]), `classificação preservada e sem recorrência herdada: ${JSON.stringify(five)}`);
+    await noErrors(page);
+    await context.close();
+  });
+
+  await test('3.2 — Teste 3: memória — digitar "Internet" sugere valor, categoria, bloco e fonte; nada é gravado sem salvar; recorrência existente é oferecida', async () => {
+    const { context, page } = await newPage();
+    await api(page, async (repo) => {
+      const conta = await repo.createNamed('accounts', { name: 'Conta', kind: 'checking' });
+      const casa = await repo.createNamed('categories', { name: 'Casa', type: 'expense' });
+      const fixas = await repo.createNamed('blocks', { name: 'Contas fixas' });
+      await repo.saveTransaction({ type: 'expense', status: 'done', amount: 10000, date: '2026-10-10', description: 'Internet', categoryId: casa.id, blockId: fixas.id, sourceId: conta.id });
+      await repo.saveTransaction({ type: 'expense', status: 'done', amount: 10000, date: '2026-11-10', description: 'Internet', categoryId: casa.id, blockId: fixas.id, sourceId: conta.id });
+      await repo.createRecurrence({ id: 'spot', type: 'expense', description: 'Spotify', amount: 3190, startDate: '2026-11-28', frequency: 'monthly' });
+    });
+    const before = (await txs(page)).length;
+    const m = await openForm(page);
+    await settled(m);
+    await m.locator('input[name=description]').fill('Internet');
+    await waitText(page, () => m.locator('.suggest-note').textContent().then(norm), /Do histórico: Casa · Contas fixas · Conta · valor habitual R\$ 100,00/);
+    eq(await m.locator('input[name=amount]').inputValue(), '100,00', 'valor habitual sugerido');
+    assert(await m.locator('.suggest-note').getByRole('button', { name: 'Repetir mensalmente' }).count() === 1, 'oferece repetir (aparece em 2 meses)');
+    eq((await txs(page)).length, before, 'nada gravado sem salvar');
+    // Recorrência já existente: oferece a ocorrência prevista.
+    await m.locator('input[name=description]').fill('Spotify');
+    await waitText(page, () => m.locator('.banner-soft').textContent().then(norm), /“Spotify” já se repete/);
+    await m.locator('.banner-soft').getByRole('button', { name: 'Marcar como paga' }).click();
+    await m.waitFor({ state: 'detached' });
+    const sp = await txs(page, 'Spotify');
+    eq(JSON.stringify(sp.map((t) => [t.recurrenceId, t.status])), JSON.stringify([['spot', 'done']]), 'pagou a ocorrência existente em vez de criar outra despesa');
+    await noErrors(page);
+    await context.close();
+  });
+
+  await test('3.2 — Teste 5: Spotify de R$ 31,90 para R$ 35,90 "Este mês e os próximos" — histórico intacto', async () => {
+    const { context, page } = await newPage();
+    await seedNubank(page);
+    await spotify(page);
+    await page.goto(`${base}#/lancamentos`);
+    await nextMonth(page); await nextMonth(page); // janeiro: ocorrência de 05/12
+    await listRows(page, 'Spotify').locator('.tx-main').click();
+    const m = page.locator('.entry-modal');
+    await settled(m);
+    await m.locator('input[name=amount]').fill('35,90');
+    await m.locator('.modal-foot button[type=submit]').click();
+    const scope = page.locator('.modal', { hasText: 'Aplicar a alteração a' });
+    assert(await scope.getByRole('button', { name: /Somente este mês/ }).count() === 1, 'opção "Somente este mês"');
+    await scope.getByRole('button', { name: /Este mês e os próximos/ }).click();
+    await m.waitFor({ state: 'detached' });
+    const r = await api(page, async (repo) => {
+      const { summarize } = await import('./js/services/finance.js');
+      const ctx = repo.context();
+      return ['2026-12', '2027-01', '2027-02', '2027-06'].map((mm) => summarize(ctx, mm).items.filter((i) => i.description === 'Spotify').map((i) => `${i.date}:${i.amount}:${i.status}`).join(','));
+    });
+    eq(JSON.stringify(r), JSON.stringify(['2026-11-05:3190:done', '2026-12-05:3590:planned', '2027-01-05:3590:planned', '2027-05-05:3590:planned']), 'novembro mantém R$ 31,90; dezembro em diante R$ 35,90');
+    eq(await api(page, (repo) => repo.list('recurrences').length), 2, 'série continuada (a anterior encerra), sem apagar o histórico');
+    await noErrors(page);
+    await context.close();
+  });
+
+  await test('3.2 — Teste 7: selecionar três despesas e copiar para outro mês; repetir não duplica; "Trazer do mês anterior"', async () => {
+    const { context, page } = await newPage();
+    await api(page, async (repo) => {
+      for (const [d, v] of [['Luz', 15000], ['Água', 8000], ['Gás', 6000], ['Cinema', 4000]]) await repo.saveTransaction({ type: 'expense', status: 'done', amount: v, date: '2026-11-12', description: d });
+    });
+    await page.goto(`${base}#/lancamentos`);
+    const j = journey();
+    await j.tap(page.getByRole('button', { name: 'Selecionar' }));
+    for (const d of ['Luz', 'Água', 'Gás']) await j.tap(listRows(page, d).locator('.row-check'));
+    await waitText(page, () => page.locator('.select-bar strong').textContent().then(norm), '3 selecionados');
+    eq(await page.locator('.select-bar input[name=batchMonth]').inputValue(), '2026-12', 'destino padrão: o próximo mês');
+    await j.tap(page.locator('.select-bar button[name=batchCopy]'));
+    await waitText(page, () => page.locator('.toast').last().textContent().then(norm), /3 lançamentos copiados para dezembro de 2026 como previstos/);
+    metrics.push(`Copiar 3 despesas para outro mês: ${j.count} cliques (Selecionar, 3 marcações, Copiar)`);
+    const dec = await api(page, async (repo) => { const { monthItems } = await import('./js/services/finance.js'); return monthItems(repo.context(), '2026-12').map((i) => `${i.description}:${i.status}:${i.date}`).sort(); });
+    eq(JSON.stringify(dec), JSON.stringify(['Gás:planned:2026-12-12', 'Luz:planned:2026-12-12', 'Água:planned:2026-12-12']), 'três previstas em dezembro, o pago não é copiado');
+    // De novo: conflito → nada duplicado.
+    await page.getByRole('button', { name: 'Selecionar' }).click();
+    for (const d of ['Luz', 'Água', 'Gás']) await listRows(page, d).locator('.row-check').click();
+    await page.locator('.select-bar button[name=batchCopy]').click();
+    await waitText(page, () => page.locator('.toast').last().textContent().then(norm), /3 já existiam em dezembro de 2026 e não foram copiados/);
+    eq((await txs(page)).length, 7, 'sem duplicidade');
+    // Janeiro: trazer de dezembro.
+    await nextMonth(page); await nextMonth(page);
+    await page.getByRole('button', { name: /Trazer de dez/ }).first().click();
+    const b = page.locator('.bring-modal');
+    await b.waitFor();
+    eq(await b.locator('.bring-row input:checked').count(), 3, 'três prontos para trazer');
+    await b.getByRole('button', { name: 'Trazer' }).click();
+    await b.waitFor({ state: 'detached' });
+    const jan = await api(page, async (repo) => { const { monthItems } = await import('./js/services/finance.js'); return monthItems(repo.context(), '2027-01').map((i) => i.description).sort(); });
+    eq(JSON.stringify(jan), JSON.stringify(['Gás', 'Luz', 'Água']), 'trazidos para janeiro');
+    await noErrors(page);
+    await context.close();
+  });
+
+  await test('3.2 — Teste 9: compras recorrentes no cartão + pagamento da fatura sem contar duas vezes', async () => {
+    const { context, page } = await newPage();
+    await seedNubank(page);
+    await spotify(page);
+    const sumDec = () => api(page, async (repo) => {
+      const { summarize } = await import('./js/services/finance.js');
+      const s = summarize(repo.context(), '2026-12');
+      const nu = repo.list('accounts').find((a) => a.name === 'Cartão Nubank');
+      const bill = s.cardBills.find((x) => x.cardId === nu.id);
+      return { exp: s.expenseTotal, total: bill.total, paid: bill.paid };
+    });
+    const before = await sumDec();
+    // Pagamento da fatura de dezembro pela interface (transferência para o cartão).
+    const m = await openForm(page);
+    await settled(m);
+    await m.locator('.segmented [data-value="transfer"]').first().click();
+    await m.locator('input[name=date]').fill('2026-11-25'); // pago hoje (data futura fica como pagamento previsto)
+    await pick(m, 'source', 'Conta');
+    await pick(m, 'to', 'Cartão Nubank');
+    await m.locator('.link-btn', { hasText: 'Usar valor em aberto' }).click();
+    await save(m);
+    const after = await sumDec();
+    eq(before.exp, 3190, 'despesa do mês antes');
+    eq(after.exp, 3190, 'pagar a fatura não cria outra despesa');
+    eq(after.paid, after.total, 'fatura liquidada');
+    await noErrors(page);
+    await context.close();
+  });
+
+  await test('3.2 — Teste 10: modelos, vínculo bloco→fonte e recorrências persistem após recarregar e voltam iguais do backup', async () => {
+    const a = await newPage();
+    await seedNubank(a.page);
+    // Salvar como modelo durante o cadastro.
+    const m = await openForm(a.page);
+    await settled(m);
+    await m.locator('input[name=description]').fill('Psicóloga');
+    await m.locator('input[name=amount]').fill('50');
+    await m.locator('[data-toggle="tpl"]').click();
+    await save(m);
+    await a.page.reload(); await a.page.waitForSelector('.page-head');
+    const f = await openForm(a.page);
+    await settled(f);
+    const chipEl = f.locator('.tpl-chip.is-saved', { hasText: 'Psicóloga' });
+    eq(await chipEl.count(), 1, 'modelo disponível após recarregar');
+    await chipEl.locator('.tpl-use').click();
+    eq(await f.locator('input[name=amount]').inputValue(), '50,00', 'modelo preenche o formulário');
+    eq((await txs(a.page, 'Psicóloga')).length, 1, 'usar o modelo não grava nada');
+    await f.locator('.modal-head button[aria-label="Fechar"]').click();
+    const disc = a.page.locator('.modal', { hasText: 'Descartar alterações?' });
+    if (await disc.count()) await disc.getByRole('button', { name: 'Descartar' }).click();
+    await spotify(a.page);
+    await a.page.goto(`${base}#/configuracoes/dados`);
+    const dl = await exportBackupUI(a.page);
+    const file = join(ARTIFACTS, 'backup-v32.json');
+    await dl.saveAs(file);
+    const snap = (p) => api(p, (repo) => { const s = repo.snapshot(); s.meta = s.meta.filter((x) => ['ui.layout', 'prefs', 'templates'].includes(x.key)); return JSON.stringify(Object.fromEntries(Object.entries(s).map(([k, v]) => [k, v.map(({ rev, ...x }) => x).sort((p2, q) => String(p2.id || p2.key).localeCompare(String(q.id || q.key)))]))); });
+    const sa = await snap(a.page);
+    assert(sa.includes('"templates"') && sa.includes('Psicóloga'), 'modelo dentro do backup');
+    await a.context.close();
+    const b = await newPage();
+    await b.page.goto(`${base}#/configuracoes/dados`);
+    const [ch] = await Promise.all([b.page.waitForEvent('filechooser'), b.page.getByRole('button', { name: 'Restaurar backup' }).click()]);
+    await ch.setFiles(file);
+    await b.page.getByRole('button', { name: 'Restaurar', exact: true }).click();
+    await waitText(b.page, '.toast', /Backup restaurado/);
+    eq(await snap(b.page), sa, 'modelos, blocos com fonte, recorrências e lançamentos equivalentes');
+    await noErrors(b.page);
+    await b.context.close();
+  });
+
+  await test('3.2 — Teste 11 (emulação de celular 390 px): cadastro do Spotify cabe na tela, sem rolagem horizontal', async () => {
+    const { context, page } = await newPage({ ...devices['iPhone 13'] });
+    await seedNubank(page);
+    await page.locator('.tabbar .tab-add').click();
+    const m = page.locator('.entry-modal');
+    await settled(m);
+    await m.locator('input[name=description]').fill('Spotify');
+    await m.locator('input[name=amount]').fill('31,90');
+    await m.locator('select[name=repeat]').selectOption('monthly');
+    await m.locator('input[name=repeatDay]').fill('5');
+    await createInline(m, 'block', 'Fatura Nubank');
+    const over = await page.evaluate(() => [document.documentElement.scrollWidth - document.documentElement.clientWidth, document.querySelector('.entry-modal').scrollWidth - document.querySelector('.entry-modal').clientWidth]);
+    assert(over[0] <= 1 && over[1] <= 1, `sem rolagem horizontal: ${over}`);
+    await save(m);
+    eq((await txs(page, 'Spotify')).length, 1, 'salvo');
+    await noErrors(page);
+    await context.close();
+  });
+
+  for (const line of metrics) console.log(`      ${line}`);
   await browser.close();
   server.close();
   const failed = results.filter((r) => !r.ok);
