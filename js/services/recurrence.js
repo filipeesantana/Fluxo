@@ -53,7 +53,7 @@ export function describeFrequency(rule) {
   const mode = ruleMode(rule);
   const every = n === 1 ? 'mês' : `${n} meses`;
   if (mode === 'days') return `Nos dias ${listDays(rule.days || [])}${n === 1 ? '' : `, a cada ${every}`}`;
-  if (mode === 'flex') return `${rule.perPeriod || 1}× por mês, datas flexíveis${n === 1 ? '' : ` (a cada ${every})`}`;
+  if (mode === 'flex') return `${(rule.perPeriod || 1) === 1 ? 'Mensal, data a definir' : `${rule.perPeriod}× por mês, datas flexíveis`}${n === 1 ? '' : ` (a cada ${every})`}`;
   if (mode === 'forecast') return 'Previsão mensal';
   if (rule.frequency === 'daily') return n === 1 ? 'Diária' : `A cada ${n} dias`;
   if (rule.frequency === 'weekly') return n === 1 ? 'Semanal' : n === 2 ? 'A cada 14 dias' : `A cada ${n * 7} dias`;

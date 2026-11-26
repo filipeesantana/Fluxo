@@ -1,7 +1,7 @@
 import { fold } from './suggest.js';
 import { dayDiff, monthOf, isISODate } from '../utils/dates.js';
 import { monthItems } from './finance.js';
-import { occurrences, ruleOccurrences } from './recurrence.js';
+import { occurrences, ruleOccurrences, ruleMode } from './recurrence.js';
 
 /*
  * Duas coisas diferentes:
@@ -107,7 +107,9 @@ export function auditData(data) {
     if (occ.has(k)) add('recurrence', 'error', `Ocorrência duplicada de “${t.description}” (${key})`, [occ.get(k), t.id]);
     else occ.set(k, t.id);
     const r = rules.get(t.recurrenceId);
-    if (r && t.status === 'planned') {
+    // Ocorrência extra (ex.: 3ª consulta do mês): chave "AAAA-MM#n" além das vagas da regra.
+    const extra = /#(\d+)$/.test(key) && (ruleMode(r || {}) !== 'flex' || Number(key.split('#')[1]) > (r?.perPeriod || 1));
+    if (r && t.status === 'planned' && !extra) {
       const from = /^\d{4}-\d{2}-\d{2}$/.test(key) ? key : `${key.slice(0, 7)}-01`;
       const to = /^\d{4}-\d{2}-\d{2}$/.test(key) ? key : `${key.slice(0, 7)}-31`;
       if (!ruleOccurrences({ ...r, exceptions: {} }, from, to).some((o) => o.key === key)) add('recurrence', 'warn', `Ocorrência prevista de “${t.description}” fora das datas da regra`, [t.id]);

@@ -8,7 +8,7 @@ import { openEntryForm } from '../components/entry-form.js';
 import { toast, toastError } from '../components/toast.js';
 import { ui } from '../state.js';
 import { panel, txRow, categoryName, accountName, capitalize, emptyState } from './common.js';
-import { openItem, itemMenu, toggleStatus, openRecurrenceForm, closeForecast } from './actions.js';
+import { openItem, itemMenu, toggleStatus, openRecurrenceForm, closeForecast, openExtraOccurrence, editSeries } from './actions.js';
 
 const PILL = { done: 'pill-done', partial: 'pill-today', overdue: 'pill-overdue', pending: 'pill-today', planned: 'pill-planned', tbd: 'pill-planned', skipped: 'pill-muted', cancelled: 'pill-muted' };
 
@@ -59,7 +59,8 @@ function occurrenceRow(c, e) {
 
 function commitmentCard(c) {
   const r = c.rule;
-  const word = r.type === 'income' ? (c.doneCount === 1 ? 'recebida' : 'recebidas') : (c.doneCount === 1 ? 'paga' : 'pagas');
+  // "1 de 2 pagas": a concordância segue o total ("de 2 pagas"), como na fala.
+  const word = r.type === 'income' ? (c.count === 1 ? 'recebida' : 'recebidas') : (c.count === 1 ? 'paga' : 'pagas');
   const doneAll = c.state === 'done';
   const meta = [c.describe, r.categoryId ? categoryName(r.categoryId) : null, r.sourceId ? accountName(r.sourceId) : null].filter(Boolean).join(' · ');
   return h('article', { class: `commit${doneAll ? ' is-done' : ''}`, dataset: { rule: r.id } },
@@ -69,7 +70,10 @@ function commitmentCard(c) {
       h('div', { class: 'right' }, h('div', { class: 'num strong' }, `${formatMoney(c.paid)} de ${formatMoney(c.total)}`), h('div', { class: 'faint small' }, doneAll ? (r.type === 'income' ? 'tudo recebido' : 'concluído') : `restam ${formatMoney(c.left)}`))),
     progress(c.ratio, { tone: doneAll ? 'ok' : c.state === 'overdue' ? 'warn' : undefined, small: true, label: `${r.description}: ${c.doneCount} de ${c.count} ${word}` }),
     h('p', { class: 'commit-progress small' }, `${c.doneCount} de ${c.count} ${word}`, c.count > 1 && !doneAll ? ` · ${formatPercent(c.ratio * 100, 0)} do valor` : ''),
-    h('div', { class: 'occ-list', role: 'list' }, ...c.entries.map((e) => occurrenceRow(c, e))));
+    h('div', { class: 'occ-list', role: 'list' }, ...c.entries.map((e) => occurrenceRow(c, e))),
+    h('div', { class: 'commit-foot' },
+      h('button', { class: 'link-btn small', type: 'button', onclick: () => openExtraOccurrence(r, c.month) }, icon('plus', 'icon-sm'), 'Adicionar ocorrência'),
+      h('button', { class: 'link-btn small', type: 'button', onclick: () => editSeries(r, firstDay(c.month)) }, 'Editar série')));
 }
 
 function forecastCard(c) {
