@@ -46,6 +46,13 @@ export function validateNamed(x) {
   return e;
 }
 
+/** Bloco: agrupamento principal; pode ter uma fonte padrão (ex.: Fatura Nubank → Cartão Nubank). */
+export function validateBlock(b) {
+  const e = validateNamed(b);
+  check(e, optStr(b.sourceId, 64), 'fonte do bloco inválida');
+  return e;
+}
+
 export function validateCategory(c) {
   const e = validateNamed(c);
   check(e, c.type === 'expense' || c.type === 'income', 'tipo de categoria inválido');
@@ -167,8 +174,28 @@ export function validateCalculation(c) {
   return e;
 }
 
+export const MAX_TEMPLATES = 60;
+/** Modelo de lançamento: só um atalho de preenchimento (nunca uma movimentação). */
+export function validateTemplate(t) {
+  const e = [];
+  check(e, t && typeof t === 'object' && !Array.isArray(t), 'modelo inválido');
+  if (e.length) return e;
+  check(e, isStr(t.id, 64) && t.id, 'id do modelo ausente');
+  check(e, ['expense', 'income'].includes(t.type), 'tipo do modelo inválido');
+  check(e, isStr(t.description, 200) && t.description.trim(), 'descrição do modelo inválida');
+  check(e, t.amount == null || posCents(t.amount), 'valor do modelo inválido');
+  for (const k of ['categoryId', 'blockId', 'sourceId', 'note']) check(e, optStr(t[k], 500), `${k} do modelo inválido`);
+  check(e, t.repeat == null || ['none', 'weekly', 'biweekly', 'monthly', 'yearly'].includes(t.repeat), 'repetição do modelo inválida');
+  return e;
+}
+
 export function validateMeta(m) {
-  return typeof m.key === 'string' && m.key ? [] : ['chave ausente'];
+  if (!(typeof m.key === 'string' && m.key)) return ['chave ausente'];
+  if (m.key === 'templates') {
+    if (!Array.isArray(m.value) || m.value.length > MAX_TEMPLATES) return ['modelos inválidos'];
+    return m.value.flatMap(validateTemplate);
+  }
+  return [];
 }
 
 const FORBIDDEN_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
@@ -217,7 +244,7 @@ const guarded = (fn, limits) => (rec) => {
 export const VALIDATORS = {
   transactions: guarded(validateTransaction),
   categories: guarded(validateCategory),
-  blocks: guarded(validateNamed),
+  blocks: guarded(validateBlock),
   accounts: guarded(validateAccount),
   recurrences: guarded(validateRecurrence),
   installmentPlans: guarded(validatePlan),

@@ -1,5 +1,51 @@
 # Changelog
 
+## 3.2.0 — Simplicidade radical e fluxo inteligente
+
+O usuário informa, o Fluxo organiza. Mesmo banco local (esquema v4) e mesmo formato de backup (3): sem migração.
+
+### Formulário universal
+- Nova ordem: **Tipo · Descrição e Valor · Data e Repetição · Bloco e Categoria · Fonte e Situação**. Observação, método, parcelamento e opções avançadas ficam em expansões discretas.
+- **Repetição** é uma lista simples (Não repetir, Semanalmente, A cada 14 dias, Mensalmente, Anualmente, Personalizar), com o **Dia** ao lado no mensal. Escolher o dia com a data ainda no padrão leva a 1ª ocorrência para esse dia do mês.
+- Vezes por mês, datas flexíveis, valor variável, início e término ficam em **Mais opções de repetição**.
+- Um **resumo discreto** antes de salvar ("Spotify · R$ 31,90 · Mensal, dia 5 · Fatura Nubank · Assinaturas · Cartão Nubank · pago"). Não é uma etapa a mais.
+- O foco começa na descrição.
+
+### Blocos e fontes
+- **Bloco com fonte padrão** (Fatura Nubank → Cartão Nubank). Ao escolher o bloco, a fonte é preenchida com a indicação "preenchida pelo bloco" e pode ser trocada. A competência da fatura segue o cartão.
+- Um bloco criado no próprio formulário já é vinculado à fonte escolhida ou à única conta com o mesmo nome. Sem vínculo, vale a única fonte usada em todos os lançamentos do bloco (mínimo de 2); nada é inventado.
+- A fonte padrão pode ser ajustada em Configurações → Categorias e blocos.
+- A fonte não é mais pré-preenchida com a "mais recente": vem do bloco, do histórico da descrição ou da escolha do usuário.
+- **Bloco como pasta**: ao clicar num bloco (ou categoria, ou fonte) aparecem:
+  - lançamentos, total, pago, pendente e comparação com o mês anterior;
+  - evolução de 6 meses e distribuição por categoria;
+  - **Adicionar lançamento** com bloco, fonte e mês preenchidos;
+  - **Copiar para o próximo mês**.
+- Os grupos de Lançamentos também abrem a pasta.
+
+### Memória e modelos
+- Descrição já usada: sugere **valor habitual**, categoria, bloco e fonte, sem sobrescrever o que foi escolhido à mão. Tudo pode ser desfeito.
+- Se a descrição aparece em 2 meses ou mais e ainda não se repete, oferece **Repetir mensalmente**.
+- Recorrência já existente com a mesma descrição: o formulário avisa e oferece **marcar a ocorrência prevista como paga** em vez de criar outra despesa.
+- **Modelos**: "Salvar como modelo" no formulário. Modelos e lançamentos frequentes aparecem na linha **Rápido** e preenchem o formulário com um toque, sem gravar nada. Ficam no backup.
+
+### Cadastro em sequência
+- **Salvar e adicionar outro**: o formulário continua aberto, sem piscar.
+- Mantém bloco, categoria, fonte, data e situação, com a indicação "Mantidos: …" e a opção de limpar.
+- Limpa descrição e valor, põe o foco na descrição e não herda a repetição.
+
+### Replicação
+- Botão na linha: **Copiar para o próximo mês** em 1 clique, sem formulário, como previsto.
+- Se já existir algo igual no destino, avisa ("Spotify já está previsto para dezembro") e oferece **Ver** ou **Copiar mesmo assim**.
+- Menu: **Copiar para outro mês**, **Repetir mensalmente** (direto, com desfazer), **Duplicar neste mês** (direto, como previsto) e **Mais opções de replicação**.
+- **Seleção em lote** em Lançamentos: Selecionar, marcar, escolher o mês e Copiar. Tudo numa transação, com ids por operação e conflitos ignorados e informados.
+- **Trazer do mês anterior**: lista o mês anterior com recorrências, parcelas e itens já existentes identificados. Também aparece no mês vazio.
+- Edição de série com **Somente este mês** e **Este mês e os próximos** nas recorrências mensais.
+
+### Outros
+- Avisos com mais de uma ação (Desfazer, Ver, Copiar mesmo assim).
+- Integridade: aviso para bloco ligado a uma fonte inexistente.
+
 ## 3.1.1 — Usabilidade, funcionalidade e confiabilidade
 
 Atualização de maturidade da 3.1: nenhuma mudança no banco local (esquema v4) nem no formato do backup (3).

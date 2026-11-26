@@ -14,7 +14,7 @@ function setBackgroundInert(on) {
  * Abre um diálogo modal acessível. A calculadora global fica fora da área
  * inerte para poder ser usada durante o preenchimento.
  */
-export function openModal({ title, body, footer = [], size = 'md', onClose, closeOnScrim = true, className = '', drawer = false }) {
+export function openModal({ title, body, footer = [], size = 'md', onClose, closeOnScrim = true, className = '', drawer = false, instant = false }) {
   const opener = document.activeElement;
   const titleId = `m-${Math.random().toString(36).slice(2, 8)}`;
   const closeBtn = h('button', { class: 'btn btn-ghost btn-icon btn-sm', type: 'button', 'aria-label': 'Fechar', onclick: () => close() }, icon('x'));
@@ -24,11 +24,12 @@ export function openModal({ title, body, footer = [], size = 'md', onClose, clos
     footer.length ? h('footer', { class: 'modal-foot' }, footer) : null,
   );
   const scrim = h('div', { class: 'modal-scrim' });
-  const root = h('div', { class: `modal-root${drawer ? ' is-drawer' : ''}` }, scrim, dialog);
+  const root = h('div', { class: `modal-root${drawer ? ' is-drawer' : ''}${instant ? ' no-anim is-open' : ''}` }, scrim, dialog);
   if (closeOnScrim) scrim.addEventListener('pointerdown', () => close());
 
   let closed = false;
-  const api = { el: dialog, root, body: dialog.querySelector('.modal-body'), close, setTitle: (t) => { dialog.querySelector('h2').textContent = t; } };
+  const api = { el: dialog, root, body: dialog.querySelector('.modal-body'), close, closeInstant: () => { root.classList.add('no-anim'); instantClose = true; close(); }, setTitle: (t) => { dialog.querySelector('h2').textContent = t; } };
+  let instantClose = false;
 
   function onKey(ev) {
     if (stack[stack.length - 1] !== api) return;
@@ -54,8 +55,8 @@ export function openModal({ title, body, footer = [], size = 'md', onClose, clos
     if (!stack.length) setBackgroundInert(false);
     root.classList.remove('is-open');
     const done = () => { root.remove(); onClose?.(result); };
-    if (prefersReducedMotion()) done(); else setTimeout(done, 220);
-    if (opener && document.contains(opener)) opener.focus({ preventScroll: true });
+    if (prefersReducedMotion() || instantClose) done(); else setTimeout(done, 220);
+    if (!instantClose && opener && document.contains(opener)) opener.focus({ preventScroll: true });
   }
 
   stack.push(api);

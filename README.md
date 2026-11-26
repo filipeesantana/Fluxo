@@ -26,9 +26,9 @@ Ele não movimenta dinheiro, não se conecta a bancos e não envia seus dados pa
 ## Como começar
 
 1. Acesse o Fluxo pelo navegador.
-2. Registre suas receitas e despesas com **Novo lançamento** (atalho `N`). Valor, descrição e data bastam para começar.
-3. Organize os lançamentos por categoria, bloco e fonte. Isso deixa os gráficos e resumos mais úteis.
-4. Para contas que se repetem, escolha **Repetir → Mensal** no próprio formulário. Para levar um lançamento já salvo a outros meses, use **Replicar** na linha dele.
+2. Registre suas receitas e despesas com **Novo lançamento** (atalho `N`). Descrição e valor bastam para começar.
+3. Organize por **bloco** (Fatura Nubank, Contas fixas, Moto…) e **categoria**. Um bloco pode ter uma fonte padrão: escolheu o bloco, a fonte vem junto.
+4. Para contas que se repetem, escolha **Repetição → Mensalmente** e o dia, no próprio formulário. Para levar um lançamento ao mês seguinte, use o botão de copiar na linha dele.
 5. Acompanhe o resumo mensal na **Visão geral**.
 6. Planeje os próximos meses em **Planejamento**: compromissos, calendário e projeção.
 7. Personalize as telas do seu jeito em **Personalizar**.
@@ -37,7 +37,8 @@ Ele não movimenta dinheiro, não se conecta a bancos e não envia seus dados pa
 ## O que você pode fazer
 
 - **Ver o mês com clareza.** Sobra projetada, disponível para investir, receitas e despesas realizadas e previstas. Clique em qualquer indicador para ver a conta que levou até ele.
-- **Registrar rápido.** O formulário sugere categoria e fonte pelo histórico e avisa quando um lançamento parece repetido, sem impedir lançamentos legítimos.
+- **Registrar rápido.** Ao digitar uma descrição já usada, o Fluxo sugere valor, categoria, bloco e fonte. Se a conta já se repete, ele oferece marcar a ocorrência prevista como paga em vez de criar outra. **Salvar e adicionar outro** mantém bloco, categoria e fonte para cadastrar várias despesas em sequência, e **modelos** preenchem o formulário com um toque.
+- **Usar blocos como pastas.** Clique num bloco para ver os lançamentos do mês, o total, quanto já foi pago, a comparação com o mês anterior e a evolução, e para adicionar um lançamento já classificado.
 - **Acompanhar cartões.** Com fechamento e vencimento cadastrados, as compras caem na fatura certa e o pagamento da fatura não conta a despesa duas vezes.
 - **Planejar.** Calendário de vencimentos, projeção de até cinco anos e simulações de decisões ("e se eu cancelar esta assinatura?") que não alteram seus registros.
 - **Acompanhar compromissos.** Uma lista mensal das contas, para marcar o que já foi pago, uma a uma.
@@ -49,16 +50,18 @@ Ele não movimenta dinheiro, não se conecta a bancos e não envia seus dados pa
 
 Quase tudo pode se repetir, independentemente de como você paga: Pix, dinheiro, débito, cartão de crédito, vale-alimentação ou outra fonte. A fonte pode até ficar para depois e ser escolhida no momento de pagar.
 
-**Uma conta todo mês.** No formulário, em **Repetir**, escolha **Mensal** e salve. O Fluxo usa a descrição, o valor, a categoria, a fonte e o dia da data, sem data de término. Os próximos meses já aparecem como previstos.
+**Uma conta todo mês.** No formulário, preencha a descrição e o valor, escolha **Repetição → Mensalmente** e, se quiser, o **dia**. Escolha o bloco e a categoria e salve. Exemplo: Spotify, R$ 31,90, mensalmente no dia 5, bloco Fatura Nubank, categoria Assinaturas. A fonte (Cartão Nubank) vem do bloco, a compra entra na fatura certa e os próximos meses já aparecem como previstos.
 
-**Um lançamento que já existe.** Clique em **Replicar** (o ícone ao lado do valor, ou no menu ⋯) e escolha:
+**Um lançamento que já existe.** Na linha dele:
 
-- **Próximo mês**, **próximos 3, 6 ou 12 meses** ou **meses escolhidos**: cria cópias previstas nesses meses;
-- **Todos os meses**: o lançamento passa a se repetir sem fim, e ele mesmo vira a primeira ocorrência (nada é duplicado).
+- o botão de **copiar** leva uma cópia prevista para o próximo mês com um clique (se já existir algo igual lá, o Fluxo avisa e não duplica);
+- no menu ⋯ há **Copiar para outro mês**, **Repetir mensalmente**, **Duplicar neste mês** e **Mais opções de replicação** (3, 6 ou 12 meses, todos os meses, meses escolhidos).
 
-Dá para manter o mesmo dia, escolher outro dia, usar vários dias do mês ou deixar a data a definir. As cópias começam como **previstas**: o "pago" nunca é copiado. Também é possível abrir o lançamento e escolher **Repetir → Mensal** ali mesmo.
+Para levar várias despesas de uma vez, use **Selecionar** em Lançamentos, marque as despesas e escolha o mês. Num mês novo, **Trazer do mês anterior** lista o que copiar e já identifica o que se repete sozinho ou já existe. As cópias começam como **previstas**: o "pago" nunca é copiado.
 
-**Quando a conta não tem um dia só.** Em **Mensal**, responda duas perguntas:
+**Mudou o valor?** Abra o lançamento do mês, altere e escolha **Somente este mês** ou **Este mês e os próximos**. Os meses anteriores não mudam.
+
+**Quando a conta não tem um dia só.** Em **Mais opções de repetição**:
 
 - **Vezes por mês** e **Datas**:
   - internet de R$ 100 todo dia 10: 1 vez, dia fixo;
@@ -66,7 +69,7 @@ Dá para manter o mesmo dia, escolher outro dia, usar vários dias do mês ou de
   - duas consultas de R$ 50 com datas a combinar: 2 vezes, a definir. O mês já conta R$ 100, e você define cada data quando souber, sem o Fluxo inventar datas.
 - **Valor variável**: até R$ 400 de combustível no mês. Cada abastecimento registrado consome a previsão: depois de R$ 300 gastos, restam R$ 100. Se passar do previsto, o excedente aparece. Se sobrar, você encerra o mês e a sobra não vira despesa.
 
-Em **Personalizar** há **toda semana**, **todo ano**, outros intervalos e **a cada 14 dias**, com intervalos reais: começando em 04/11, as ocorrências caem em 04/11, 18/11, 02/12, 16/12 e 30/12. Por isso, dezembro pode ter três ocorrências.
+Também há **Semanalmente**, **Anualmente**, **Personalizar** (outros intervalos) e **A cada 14 dias**, com intervalos reais: começando em 04/11, as ocorrências caem em 04/11, 18/11, 02/12, 16/12 e 30/12. Por isso, dezembro pode ter três ocorrências.
 
 Em **Planejamento → Compromissos**, cada mês tem sua própria lista. O destaque é **quanto falta pagar**, e abaixo vem o progresso ("1 de 2 pagas"). Pagar em novembro não marca dezembro. Em cada ocorrência você pode:
 
