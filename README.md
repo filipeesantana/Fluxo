@@ -4,21 +4,9 @@ Finanças pessoais **local-first**: lançamentos, cartões e faturas, calendári
 
 > O Fluxo é a evolução do **Guia Financeiro 1.0**. O banco local, os identificadores e o endereço de publicação continuam os mesmos: quem já usava a versão anterior mantém todos os dados.
 
-## Publicar no GitHub Pages
+## Publicação
 
-1. Envie o conteúdo deste pacote para a **raiz** do repositório (o `index.html` deve ficar na raiz).
-2. Em **Settings → Pages**, escolha **Deploy from a branch → `main` → `/ (root)`**.
-3. Acesse `https://usuario.github.io/nome-do-repositorio/`.
-
-Os caminhos são relativos e a navegação usa `#/rotas`, então o app funciona em qualquer subdiretório. O `.nojekyll` evita o processamento pelo Jekyll.
-
-## Executar localmente
-
-Sirva a pasta por HTTP (abrir via `file://` não funciona com módulos ES):
-
-```bash
-node tests/server.mjs          # http://127.0.0.1:8080/guia-financeiro/
-```
+Site estático publicado pelo GitHub Pages a partir da raiz da branch `main`. Todos os caminhos são relativos e a navegação usa `#/rotas`, por isso funciona em qualquer subdiretório. Não há etapa de build nem dependências de execução.
 
 ## Arquitetura
 
@@ -61,11 +49,11 @@ Backups do **Guia Financeiro 1.0** são aceitos. Antes de restaurar, o arquivo �
 
 ## Testes
 
-```bash
-node --test tests/unit/*.test.mjs     # 43 testes das regras financeiras e de datas
-node tests/e2e/run.mjs                # 39 testes no Chromium (requer o pacote playwright)
-node tests/perf/scale.mjs             # escala com 100, 1.000, 10.000 e 50.000 lançamentos sintéticos
-```
+| Suíte | Comando | Cobertura |
+|---|---|---|
+| Unitários | `node --test tests/unit/*.test.mjs` | regras financeiras, datas, faturas, calendário, cenários, metas, auditoria |
+| Navegador | `node tests/e2e/run.mjs` | fluxos completos no Chromium, servido em subdiretório |
+| Escala | `node tests/perf/scale.mjs` | 100, 1.000, 10.000 e 50.000 lançamentos sintéticos |
 
 Última execução: **43/43 unitários** e **39/39 no navegador** aprovados. Os testes de navegador servem o app em `/guia-financeiro/`, como no GitHub Pages. Medições de escala (Chromium headless, máquina de CI; os valores variam com o hardware):
 
