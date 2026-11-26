@@ -110,3 +110,13 @@
   --shadow-modal: 0 4px 12px rgba(0, 0, 0, 0.45), 0 32px 90px rgba(0, 0, 0, 0.6);
   --scrim: rgba(0, 0, 0, 0.55);
 }
+
+/* Paleta de personalização: tons com contraste ≥ 3:1 sobre as superfícies de cada tema. */
+:root, :root[data-theme="light"] {
+  --pal-blue: #3355d1; --pal-teal: #0e7f78; --pal-green: #16804e; --pal-amber: #9c620c;
+  --pal-rose: #b3456b; --pal-violet: #6d4fc2; --pal-slate: #4f5868;
+}
+:root[data-theme="dark"] {
+  --pal-blue: #7d96f6; --pal-teal: #4fcfc4; --pal-green: #55c48c; --pal-amber: #e2b05c;
+  --pal-rose: #e889a8; --pal-violet: #a98ae0; --pal-slate: #a4abb8;
+}

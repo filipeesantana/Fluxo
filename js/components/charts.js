@@ -275,3 +275,73 @@ export function progress(ratio, { tone, small = false, label } = {}) {
   if (!prefersReducedMotion()) requestAnimationFrame(() => requestAnimationFrame(() => { fill.style.width = `${pct}%`; }));
   return h('span', { class: `progress${small ? ' progress-sm' : ''}`, role: 'progressbar', 'aria-valuemin': '0', 'aria-valuemax': '100', 'aria-valuenow': String(Math.round(pct)), 'aria-label': label || null }, fill);
 }
+
+// ——— Visualizações alternativas de distribuição ———
+
+/** Rosca: só para distribuições sem valores negativos (o chamador verifica). */
+export function donutChart(groups, { labelOf, colorOf, onSelect, total, centerLabel = 'Total' } = {}) {
+  const wrap = h('div', { class: 'donut-wrap' });
+  const sum = groups.reduce((t, g) => t + Math.max(0, g.total), 0);
+  if (!sum) return h('div', { class: 'empty-block' }, 'Sem valores para exibir.');
+  const R = 60, r = 38, C = 70;
+  const svg = s('svg', { class: 'donut', viewBox: '0 0 140 140', role: 'img', 'aria-label': `Distribuição: total ${formatMoney(total ?? sum)}` });
+  let a0 = -Math.PI / 2;
+  const top = groups.slice(0, 8);
+  const rest = groups.slice(8).reduce((t, g) => t + Math.max(0, g.total), 0);
+  const parts = rest > 0 ? [...top, { key: '__rest__', total: rest, pct: (rest / sum) * 100 }] : top;
+  for (const g of parts) {
+    const frac = Math.max(0, g.total) / sum;
+    if (frac <= 0) continue;
+    const a1 = a0 + frac * Math.PI * 2 - (frac === 1 ? 0.0001 : 0);
+    const large = a1 - a0 > Math.PI ? 1 : 0;
+    const p = (ang, rad) => `${(C + rad * Math.cos(ang)).toFixed(2)},${(C + rad * Math.sin(ang)).toFixed(2)}`;
+    const d = `M${p(a0, R)}A${R},${R} 0 ${large} 1 ${p(a1, R)}L${p(a1, r)}A${r},${r} 0 ${large} 0 ${p(a0, r)}Z`;
+    const label = g.key === '__rest__' ? 'Outros' : labelOf(g.key);
+    const seg = s('path', { d, class: `donut-seg${anim() ? ' seg-anim' : ''}`, fill: g.key === '__rest__' ? 'var(--c-none)' : colorOf(g.key), tabindex: onSelect && g.key !== '__rest__' ? '0' : null, role: onSelect ? 'button' : null, 'aria-label': `${label}: ${formatMoney(g.total)} (${formatPercent(g.pct, 0)})` });
+    seg.append(s('title', null, `${label}: ${formatMoney(g.total)} · ${formatPercent(g.pct, 1)}`));
+    if (onSelect && g.key !== '__rest__') { seg.addEventListener('click', () => onSelect(g.key)); seg.addEventListener('keydown', (e) => { if (e.key === 'Enter') onSelect(g.key); }); }
+    svg.append(seg);
+    a0 = a1 + (frac === 1 ? 0.0001 : 0);
+  }
+  svg.append(s('text', { x: C, y: C - 4, 'text-anchor': 'middle', class: 'donut-total' }, formatCompact(total ?? sum)), s('text', { x: C, y: C + 14, 'text-anchor': 'middle', class: 'donut-label' }, centerLabel));
+  const legend = h('div', { class: 'donut-legend' }, ...parts.map((g) => h(onSelect && g.key !== '__rest__' ? 'button' : 'div', { class: 'legend-row', type: onSelect ? 'button' : null, onclick: onSelect && g.key !== '__rest__' ? () => onSelect(g.key) : null },
+    h('i', { class: 'sw', style: { background: g.key === '__rest__' ? 'var(--c-none)' : colorOf(g.key) } }),
+    h('span', { class: 'truncate grow' }, g.key === '__rest__' ? 'Outros' : labelOf(g.key)),
+    h('span', { class: 'num strong' }, formatMoney(g.total)), h('span', { class: 'num faint' }, formatPercent(g.pct, 0)))));
+  wrap.append(svg, legend);
+  return wrap;
+}
+
+/** Barras verticais para distribuição (ordenadas, com valor visível). */
+export function columnsChart(groups, { labelOf, colorOf, onSelect, width, frac = 0.33 } = {}) {
+  const list = groups.filter((g) => g.total > 0).slice(0, 10);
+  if (!list.length) return h('div', { class: 'empty-block' }, 'Sem valores para exibir.');
+  const W = width || autoWidth(frac), H = 190, pad = { t: 22, r: 6, b: 34, l: 6 };
+  const max = Math.max(...list.map((g) => g.total));
+  const cw = (W - pad.l - pad.r) / list.length;
+  const svg = s('svg', { class: 'chart', viewBox: `0 0 ${W} ${H}`, role: 'img', 'aria-label': 'Distribuição em barras verticais' });
+  list.forEach((g, i) => {
+    const bh = (H - pad.t - pad.b) * (g.total / max);
+    const x = pad.l + i * cw + cw * 0.18, w = cw * 0.64, y = H - pad.b - bh;
+    const grp = s('g', { tabindex: onSelect ? '0' : null, role: onSelect ? 'button' : null, 'aria-label': `${labelOf(g.key)}: ${formatMoney(g.total)}` });
+    grp.append(s('rect', { class: `col${anim() ? ' bar-anim' : ''}`, x, y, width: w, height: Math.max(1, bh), rx: 3, fill: colorOf(g.key) }));
+    grp.append(s('text', { class: 'axis', x: x + w / 2, y: y - 6, 'text-anchor': 'middle' }, formatCompact(g.total)));
+    const name = labelOf(g.key);
+    grp.append(s('text', { class: 'axis', x: x + w / 2, y: H - pad.b + 14, 'text-anchor': 'middle' }, name.length > 10 ? `${name.slice(0, 9)}…` : name));
+    grp.append(s('text', { class: 'axis faint-axis', x: x + w / 2, y: H - pad.b + 27, 'text-anchor': 'middle' }, formatPercent(g.pct, 0)));
+    grp.append(s('title', null, `${name}: ${formatMoney(g.total)} · ${formatPercent(g.pct, 1)}`));
+    if (onSelect) { grp.addEventListener('click', () => onSelect(g.key)); grp.addEventListener('keydown', (e) => { if (e.key === 'Enter') onSelect(g.key); }); }
+    svg.append(grp);
+  });
+  return h('div', { class: 'chart-wrap' }, svg);
+}
+
+/** Tabela resumida (alternativa textual acessível a qualquer gráfico de distribuição). */
+export function groupTable(groups, { labelOf, onSelect, total } = {}) {
+  if (!groups.length) return h('div', { class: 'empty-block' }, 'Sem valores para exibir.');
+  return h('div', { class: 'table-wrap' }, h('table', { class: 'table table-compact' },
+    h('thead', null, h('tr', null, h('th', null, 'Item'), h('th', { class: 'right' }, 'Valor'), h('th', { class: 'right' }, '%'), h('th', { class: 'right' }, 'Previsto'))),
+    h('tbody', null, ...groups.map((g) => h('tr', { class: onSelect ? 'is-link' : '', tabindex: onSelect ? '0' : null, onclick: onSelect ? () => onSelect(g.key) : null, onkeydown: onSelect ? (e) => { if (e.key === 'Enter') onSelect(g.key); } : null },
+      h('td', null, labelOf(g.key)), h('td', { class: 'right num strong' }, formatMoney(g.total)), h('td', { class: 'right num faint' }, formatPercent(g.pct, 1)), h('td', { class: 'right num faint' }, g.planned ? formatMoney(g.planned) : '—')))),
+    total != null ? h('tfoot', null, h('tr', null, h('td', { class: 'strong' }, 'Total'), h('td', { class: 'right num strong' }, formatMoney(total)), h('td', { class: 'right num faint' }, '100%'), h('td'))) : null));
+}

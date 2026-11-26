@@ -13,7 +13,7 @@ export function openMenu(anchor, items, { align = 'end' } = {}) {
     const b = h('button', {
       class: `menu-item${it.danger ? ' is-danger' : ''}`, type: 'button', role: 'menuitem', disabled: it.disabled,
       onclick: (ev) => { ev.stopPropagation(); closeMenu(); it.onSelect(); },
-    }, it.icon ? icon(it.icon, 'icon-sm') : h('span', { class: 'icon-sm' }), h('span', null, it.label));
+    }, it.swatch ? h('span', { class: 'swatch', style: { '--sw': it.swatch === 'auto' ? 'var(--accent)' : `var(--pal-${it.swatch})` } }) : it.icon ? icon(it.icon, 'icon-sm') : h('span', { class: 'icon-sm' }), h('span', null, it.label));
     buttons.push(b);
     list.append(b);
   }

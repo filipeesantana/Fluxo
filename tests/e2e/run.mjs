@@ -23,7 +23,7 @@ async function newPage(opts = {}) {
   const page = await context.newPage();
   page.errors = [];
   page.on('pageerror', (e) => page.errors.push(`pageerror: ${e.message}`));
-  page.on('console', (m) => { if (m.type() === 'error') page.errors.push(`console: ${m.text()}`); });
+  page.on('console', (m) => { if (m.type() === 'error' || /Content Security Policy/i.test(m.text())) page.errors.push(`console: ${m.text()}`); });
   page.on('response', (r) => { if (r.status() >= 400) page.errors.push(`HTTP ${r.status()} ${r.url()}`); });
   page.on('requestfailed', (r) => page.errors.push(`falha ${r.url()}`));
   page.on('dialog', (d) => { page.errors.push(`dialog inesperado: ${d.message()}`); d.dismiss(); });
@@ -48,7 +48,7 @@ async function waitText(page, selectorOrFn, expected, { timeout = 4000 } = {}) {
 
 const kpi = (page, label) => async () => norm(await page.locator('.kpi', { has: page.locator('.kpi-label', { hasText: label }) }).locator('.kpi-value').textContent());
 async function expectKpi(page, label, value) { await waitText(page, kpi(page, label), value); }
-const evolutionHint = (page) => async () => norm(await page.locator('.panel', { has: page.locator('h2', { hasText: /^Evolução$/ }) }).locator('.panel-head .hint').textContent());
+const evolutionHint = (page) => async () => norm(await page.locator('.panel', { has: page.locator('h2', { hasText: /^Evolução$/ }) }).locator('.panel-head .hint').textContent()).split(' · ')[0];
 async function barValue(page, section, name) {
   const row = page.locator('.panel', { has: page.locator('h2', { hasText: section }) }).locator('.bar-row', { has: page.locator('.bar-name', { hasText: name }) });
   if (!(await row.count())) return null;
@@ -56,12 +56,10 @@ async function barValue(page, section, name) {
 }
 
 /** Executa código com o repositório do app dentro da página. */
+// A CSP do app proíbe eval/new Function dentro da página; o Playwright avalia
+// a expressão pelo protocolo de depuração, que não é afetado pela CSP.
 function api(page, fn, arg) {
-  return page.evaluate(async ([src, a]) => {
-    const repo = await import('./js/database/repository.js');
-    const f = new Function('repo', 'arg', `return (${src})(repo, arg);`);
-    return f(repo, a);
-  }, [fn.toString(), arg]);
+  return page.evaluate(`(async () => { const repo = await import('./js/database/repository.js'); return (${fn.toString()})(repo, ${JSON.stringify(arg ?? null)}); })()`);
 }
 
 async function openForm(page) {
@@ -99,6 +97,8 @@ async function save(modal) {
 }
 
 async function test(name, fn) {
+  // ONLY=trecho executa apenas os testes cujo nome contém o trecho (útil durante a manutenção).
+  if (process.env.ONLY && !name.includes(process.env.ONLY)) return;
   const t0 = Date.now();
   try {
     await fn();
@@ -108,6 +108,13 @@ async function test(name, fn) {
     results.push({ name, ok: false, ms: Date.now() - t0, error: err.message });
     console.log(`  ✗ ${name}\n      ${err.message.split('\n')[0]}`);
   }
+}
+
+/** Exporta o backup completo (JSON comum) pela interface e devolve o download. */
+async function exportBackupUI(page) {
+  await page.getByRole('button', { name: 'Exportar backup completo' }).click();
+  const [dl] = await Promise.all([page.waitForEvent('download'), page.locator('.modal').getByRole('button', { name: 'Gerar arquivo' }).click()]);
+  return dl;
 }
 
 async function noErrors(page) { eq(page.errors.length, 0, `Erros no console/rede: ${page.errors.join(' | ')}`); }
@@ -123,7 +130,7 @@ async function run() {
 
   await test('Cenário 15/1/7 — banco vazio, primeiro lançamento pela interface, agrupamentos e persistência', async () => {
     const { context, page } = await newPage();
-    await page.waitForSelector('.kpi-grid');
+    await page.waitForSelector('[data-kpi]');
     assert(await page.locator('.empty-block').count() >= 3, 'estrutura do painel visível com estados vazios');
     const m = await openForm(page);
     await m.locator('input[name=amount]').fill('129,90');
@@ -141,7 +148,7 @@ async function run() {
     await waitText(page, evolutionHint(page), 'R$ 129,90 em despesas');
     await expectKpi(page, 'Despesas realizadas', 'R$ 0,00');
     await page.reload();
-    await page.waitForSelector('.kpi-grid');
+    await page.waitForSelector('[data-kpi]');
     eq(await barValue(page, 'Por bloco', 'Namorada'), 'R$ 129,90', 'persistência após recarregar');
     eq(await page.locator('.tx-row').count(), 1, 'uma única movimentação');
     await noErrors(page);
@@ -195,7 +202,7 @@ async function run() {
     await m.waitFor({ state: 'detached' });
     await page.goto(`${base}#/visao-geral`);
     for (let i = 0; i < 12; i++) {
-      if (i === 6) { await page.reload(); await page.waitForSelector('.kpi-grid'); for (let k = 0; k < 6; k++) await page.keyboard.press('ArrowRight'); }
+      if (i === 6) { await page.reload(); await page.waitForSelector('[data-kpi]'); for (let k = 0; k < 6; k++) await page.keyboard.press('ArrowRight'); }
       await page.waitForTimeout(60);
       const rows = await page.locator('.tx-row', { hasText: 'Internet' }).count();
       const label = norm(await page.locator('.month-label').textContent());
@@ -273,7 +280,7 @@ async function run() {
       await repo.saveGoal({ name: 'Meta', target: 1000000, initial: 0, monthly: 50000, annualRate: 10, startMonth: '2026-11', investmentId: inv.id });
     });
     await a.page.goto(`${base}#/configuracoes`);
-    const [dl] = await Promise.all([a.page.waitForEvent('download'), a.page.getByRole('button', { name: 'Exportar backup (JSON)' }).click()]);
+    const dl = await exportBackupUI(a.page);
     backupPath = join(ARTIFACTS, 'backup-teste.json');
     await dl.saveAs(backupPath);
     const original = await api(a.page, (repo) => JSON.stringify(repo.snapshot(), Object.keys(repo.snapshot()).sort()));
@@ -284,7 +291,7 @@ async function run() {
     await b.page.goto(`${base}#/configuracoes`);
     const [chooser] = await Promise.all([b.page.waitForEvent('filechooser'), b.page.getByRole('button', { name: 'Restaurar backup' }).click()]);
     await chooser.setFiles(backupPath);
-    await b.page.waitForSelector('.modal', { hasText: 'Restaurar backup?' });
+    await b.page.waitForSelector('.modal', { hasText: 'Restaurar backup (arquivo)?' });
     await waitText(b.page, '.impact', /29 lançamentos/); // 25 avulsos + 4 parcelas
     await b.page.getByRole('button', { name: 'Restaurar', exact: true }).click();
     await waitText(b.page, '.toast', /Backup restaurado/);
@@ -428,7 +435,7 @@ async function run() {
     const loaded = new Set();
     page.on('response', (r) => loaded.add(new URL(r.url()).pathname));
     await page.reload();
-    await page.waitForSelector('.kpi-grid');
+    await page.waitForSelector('[data-kpi]');
     for (const hash of ['#/lancamentos', '#/planejamento/recorrencias', '#/planejamento/programadas', '#/planejamento/parcelamentos', '#/planejamento/orcamentos', '#/investimentos', '#/configuracoes', '#/visao-geral']) {
       await page.goto(`${base}${hash}`);
       await page.waitForSelector('.page-head');
@@ -447,7 +454,9 @@ async function run() {
       const src = await readFile(f, 'utf8');
       assert(!/from '\//.test(src) && !/import\('\//.test(src), `import absoluto em ${f}`);
       assert(!/\beval\s*\(|new Function\s*\(/.test(src), `eval/new Function em ${f}`);
-      assert(!/https?:\/\//.test(src.replace(/http:\/\/www\.w3\.org\/2000\/svg/g, '')), `URL externa em ${f}`);
+      // Só são permitidos o namespace SVG e os dois links informativos de “Sobre o Fluxo” (abertos pelo usuário, nunca buscados pelo app).
+      const rest = src.replace(/http:\/\/www\.w3\.org\/2000\/svg/g, '').replace(/'https:\/\/github\.com\/filipeesantana\/fluxo'/g, '').replace(/'https:\/\/filipeesantana\.github\.io\/fluxo\/'/g, '');
+      assert(!/https?:\/\//.test(rest), `URL externa em ${f}`);
     }
     await noErrors(page);
     await context.close();
@@ -478,7 +487,7 @@ async function run() {
     await context.close();
   });
 
-  await test('Cenário 19 — atualização do esquema v1 → v2 preserva o banco existente', async () => {
+  await test('Cenário 19 — atualização do esquema v1 → v3 preserva o banco existente', async () => {
     const { context, page } = await newPage();
     await page.goto('about:blank');
     await page.goto(`${base}manifest.webmanifest`);
@@ -504,7 +513,7 @@ async function run() {
       });
     });
     await page.goto(`${base}#/visao-geral`);
-    await page.waitForSelector('.kpi-grid');
+    await page.waitForSelector('[data-kpi]');
     const info = await page.evaluate(async () => {
       const { DB_NAME } = await import('./js/database/schema.js');
       const repo = await import('./js/database/repository.js');
@@ -514,7 +523,7 @@ async function run() {
       db.close();
       return { v, idx, ids: repo.list('transactions').map((t) => t.id).sort() };
     });
-    eq(info.v, 2, 'versão do banco');
+    eq(info.v, 3, 'versão do banco');
     assert(info.idx.includes('occurrence'), 'índice único de ocorrências criado');
     eq(JSON.stringify(info.ids), JSON.stringify(['a', 'dup1']), 'dados preservados e duplicata removida');
     await noErrors(page);
@@ -553,7 +562,9 @@ async function run() {
     await page.locator('.tx-row', { hasText: 'Plano móvel' }).locator('.tx-main').click();
     const m = page.locator('.entry-modal');
     await m.locator('input[name=amount]').fill('45');
-    await save(m);
+    await m.locator('.modal-foot button[type=submit]').click();
+    await page.locator('.scope-opt', { hasText: 'Apenas esta ocorrência' }).click();
+    await m.waitFor({ state: 'detached' });
     await expectKpi(page, 'Compromissos pendentes', 'R$ 45,00');
     await page.keyboard.press('ArrowRight');
     await expectKpi(page, 'Compromissos pendentes', 'R$ 38,00');
@@ -679,7 +690,7 @@ async function run() {
     });
     const t0 = Date.now();
     await page.reload();
-    await page.waitForSelector('.kpi-grid');
+    await page.waitForSelector('[data-kpi]');
     await page.waitForSelector('.tx-row');
     const load = Date.now() - t0;
     const t1 = Date.now();
@@ -717,7 +728,7 @@ async function run() {
     await page.locator('.nav-link[data-route="entries"]').hover();
     await waitText(page, '.tooltip', 'Lançamentos');
     await page.reload();
-    await page.waitForSelector('.kpi-grid');
+    await page.waitForSelector('[data-kpi]');
     assert(await page.evaluate(() => document.documentElement.classList.contains('sidebar-collapsed')), 'preferência persistida');
     const w = await page.locator('.sidebar').evaluate((el) => el.getBoundingClientRect().width);
     assert(w < 80, `menu recolhido estreito (${w}px)`);
@@ -997,7 +1008,7 @@ async function run() {
       });
     });
     await page.goto(`${base}#/visao-geral`);
-    await page.waitForSelector('.kpi-grid');
+    await page.waitForSelector('[data-kpi]');
     eq(await barValue(page, 'Por categoria', 'Alimentação'), 'R$ 250,00', 'lançamento antigo exibido');
     await page.goto(`${base}#/investimentos`);
     await waitText(page, () => page.locator('.goal-card', { hasText: 'Reserva' }).locator('.goal-forecast').textContent().then(norm), /Conclusão em .*estimativa com rentabilidade/);
@@ -1022,7 +1033,7 @@ async function run() {
     await page.close();
     const again = await context.newPage();
     await again.goto(base);
-    await again.waitForSelector('.kpi-grid');
+    await again.waitForSelector('[data-kpi]');
     await expectKpi(again, 'Despesas realizadas', 'R$ 43,21');
     await context.close();
   });
@@ -1073,13 +1084,13 @@ async function run() {
       await repo.saveTransaction({ type: 'expense', status: 'done', amount: 2500, date: '2026-11-10', description: 'Recente', sourceId: c.id });
     });
     await page.reload();
-    await page.waitForSelector('.kpi-grid');
+    await page.waitForSelector('[data-kpi]');
     await api(page, (repo) => repo.whenFullyLoaded());
     await waitText(page, () => page.locator('.kv', { hasText: 'Saldo em contas hoje' }).locator('.kv-value').textContent().then(norm), 'R$ 975,00');
     await page.evaluate(async () => { const st = await import('./js/state.js'); st.setMonth('2023-01'); });
     await expectKpi(page, 'Receitas recebidas', 'R$ 1.000,00');
     await page.goto(`${base}#/configuracoes/dados`);
-    const [dl] = await Promise.all([page.waitForEvent('download'), page.getByRole('button', { name: 'Exportar backup (JSON)' }).click()]);
+    const dl = await exportBackupUI(page);
     const file = join(ARTIFACTS, 'backup-duas-fases.json');
     await dl.saveAs(file);
     const b = JSON.parse(await readFile(file, 'utf8'));
@@ -1087,6 +1098,611 @@ async function run() {
     await noErrors(page);
     await context.close();
   });
+  // ——————————————————— Fluxo 3.0 ———————————————————
+
+  await test('3.0 — Planejamento: preferência antiga "proximos", valores inválidos, todas as abas, recarga e navegação repetida', async () => {
+    const { context, page } = await newPage();
+    const tabs = ['calendario', 'projecao', 'simulacoes', 'recorrencias', 'programadas', 'parcelamentos', 'orcamentos'];
+    // Regressão: a 1.0 gravava "proximos"; a 2.0 fazia TABS[tab]() e quebrava com "... is not a function".
+    for (const bad of ['proximos', 'xyz', '{}', '__proto__', 'constructor', '']) {
+      await page.evaluate((v) => localStorage.setItem('gf.planning.tab', v), bad);
+      await page.goto(`${base}#/planejamento`);
+      await page.waitForSelector('.subnav [aria-current="page"]');
+      const cur = await page.locator('.subnav [aria-current="page"]').getAttribute('data-tab');
+      assert(tabs.includes(cur), `aba válida para preferência ${JSON.stringify(bad)} (obtido ${cur})`);
+      if (bad === 'proximos') eq(cur, 'projecao', 'preferência legada convertida');
+      eq(await page.locator('.section-error').count(), 0, `sem erro de seção para ${JSON.stringify(bad)}`);
+    }
+    await page.goto(`${base}#/planejamento/proximos`);
+    await page.waitForSelector('.subnav [aria-current="page"][data-tab="projecao"]');
+    for (const phase of ['vazio', 'com dados']) {
+      if (phase === 'com dados') {
+        await api(page, async (repo) => {
+          await repo.saveTransaction({ type: 'income', status: 'done', amount: 300000, date: '2026-11-05', description: 'Salário' });
+          await repo.saveRecurrence({ type: 'expense', description: 'Aluguel', amount: 120000, frequency: 'monthly', startDate: '2026-11-10' });
+          await repo.createInstallmentPlan({ description: 'Notebook', total: 300000, count: 10, purchaseDate: '2026-11-03' });
+          const c = (await repo.createNamed('categories', { name: 'Mercado', type: 'expense' }));
+          await repo.saveBudget({ scope: 'category', refId: c.id, amount: 80000 });
+        });
+      }
+      for (let round = 0; round < 2; round++) {
+        for (const t of tabs) {
+          await page.locator(`.subnav-link[data-tab="${t}"]`).click();
+          await page.waitForSelector(`.subnav [aria-current="page"][data-tab="${t}"]`);
+          eq(await page.locator('.section-error').count(), 0, `aba ${t} (${phase}) sem erro`);
+        }
+      }
+      for (const t of ['calendario', 'orcamentos']) {
+        await page.goto(`${base}#/planejamento/${t}`);
+        await page.waitForSelector('.month-nav');
+        for (let k = 0; k < 14; k++) await page.keyboard.press('ArrowRight'); // atravessa a virada de ano
+        for (let k = 0; k < 3; k++) await page.keyboard.press('ArrowLeft');
+        eq(await page.locator('.section-error').count(), 0, `troca de mês/ano em ${t}`);
+      }
+      await page.reload();
+      await page.waitForSelector('.subnav [aria-current="page"]');
+      eq(await page.locator('.subnav [aria-current="page"]').getAttribute('data-tab'), 'orcamentos', 'aba restaurada após recarregar');
+    }
+    await noErrors(page);
+    await context.close();
+  });
+
+  await test('3.0 — Planejamento: organizar abas (ordem e ocultar) persiste; aba oculta continua acessível pelo endereço', async () => {
+    const { context, page } = await newPage();
+    await page.goto(`${base}#/planejamento/calendario`);
+    await page.locator('.subnav-more').click();
+    const m = page.locator('.modal', { hasText: 'Organizar abas do Planejamento' });
+    await m.locator('.sortable-row', { hasText: 'Orçamentos' }).getByRole('button', { name: /para cima/ }).click();
+    await m.locator('.sortable-row', { hasText: 'Simulações' }).locator('input[type=checkbox]').uncheck();
+    await m.getByRole('button', { name: 'Salvar' }).click();
+    await page.waitForTimeout(500);
+    const order = await page.locator('.subnav-link').evaluateAll((els) => els.map((e) => e.dataset.tab));
+    eq(order.includes('simulacoes'), false, 'aba oculta some do menu');
+    assert(order.indexOf('orcamentos') < order.indexOf('parcelamentos'), `ordem salva: ${order}`);
+    await page.reload();
+    await page.waitForSelector('.subnav-link');
+    eq(JSON.stringify(await page.locator('.subnav-link').evaluateAll((els) => els.map((e) => e.dataset.tab))), JSON.stringify(order), 'ordem persiste após recarregar');
+    await page.goto(`${base}#/planejamento/simulacoes`);
+    await page.waitForSelector('.subnav [aria-current="page"][data-tab="simulacoes"]');
+    await noErrors(page);
+    await context.close();
+  });
+
+  await test('3.0 — Repetir lançamento: Internet mensal em um único salvamento, sem duplicar após recarregar', async () => {
+    const { context, page } = await newPage();
+    const m = await openForm(page);
+    await m.locator('input[name=amount]').fill('100');
+    await m.locator('input[name=description]').fill('Internet');
+    await m.locator('input[name=date]').fill('2026-11-15');
+    await m.locator('select[name=repeat]').selectOption('monthly');
+    await save(m);
+    const check = async () => api(page, async (repo) => {
+      const { summarize } = await import('./js/services/finance.js');
+      const ctx = repo.context();
+      const months = ['2026-11', '2026-12', '2027-01', '2027-06', '2027-10'];
+      return { rules: repo.list('recurrences').filter((r) => r.description === 'Internet').length,
+        perMonth: months.map((mm) => summarize(ctx, mm).items.filter((i) => i.description === 'Internet').length) };
+    });
+    const a = await check();
+    eq(a.rules, 1, 'uma regra');
+    eq(JSON.stringify(a.perMonth), '[1,1,1,1,1]', 'uma ocorrência por mês');
+    await page.reload();
+    await page.waitForSelector('[data-kpi]');
+    eq(JSON.stringify(await check()), JSON.stringify(a), 'nada duplicado após recarregar');
+    await noErrors(page);
+    await context.close();
+  });
+
+  await test('3.0 — Recorrência: término inclusivo, quantidade, dia 31 preservado, pausa/retomada e conversão sem duplicar', async () => {
+    const { context, page } = await newPage();
+    const r = await api(page, async (repo) => {
+      const { occurrences } = await import('./js/services/recurrence.js');
+      const out = {};
+      const a = await repo.createRecurrence({ type: 'expense', description: 'Fim', amount: 1000, frequency: 'monthly', startDate: '2026-11-10', endDate: '2027-02-10' });
+      out.inclusive = occurrences(repo.get('recurrences', a.id), '2026-01-01', '2028-01-01');
+      const b = await repo.createRecurrence({ type: 'expense', description: 'Qtd', amount: 1000, frequency: 'monthly', startDate: '2026-11-05', count: 3 });
+      out.count = occurrences(repo.get('recurrences', b.id), '2026-01-01', '2028-01-01');
+      const c = await repo.createRecurrence({ type: 'expense', description: 'D31', amount: 1000, frequency: 'monthly', startDate: '2027-01-31' });
+      out.d31 = occurrences(repo.get('recurrences', c.id), '2027-01-01', '2027-05-31');
+      const next = await repo.editSeriesFrom(c.id, '2027-03-31', { amount: 2000 });
+      out.d31after = occurrences(repo.get('recurrences', next.id), '2027-03-01', '2027-06-30');
+      await repo.pauseRecurrence(b.id, '2026-12-01');
+      out.paused = occurrences(repo.get('recurrences', b.id), '2026-01-01', '2028-01-01');
+      await repo.resumeRecurrence(b.id, '2027-01-01');
+      out.resumed = occurrences(repo.get('recurrences', b.id), '2026-01-01', '2028-01-01');
+      const tx = await repo.saveTransaction({ type: 'expense', status: 'done', amount: 5000, date: '2026-11-20', description: 'Academia' });
+      const rule = await repo.convertToRecurring(tx.id, { frequency: 'monthly' });
+      const { summarize } = await import('./js/services/finance.js');
+      const ctx = repo.context();
+      out.conv = ['2026-11', '2026-12'].map((mm) => summarize(ctx, mm).items.filter((i) => i.description === 'Academia').map((i) => i.status));
+      out.convTx = repo.list('transactions').filter((t) => t.description === 'Academia').length;
+      out.ruleStart = rule.startDate;
+      return out;
+    });
+    eq(JSON.stringify(r.inclusive), JSON.stringify(['2026-11-10', '2026-12-10', '2027-01-10', '2027-02-10']), 'data final incluída');
+    eq(JSON.stringify(r.count), JSON.stringify(['2026-11-05', '2026-12-05', '2027-01-05']), 'quantidade de repetições');
+    eq(JSON.stringify(r.d31), JSON.stringify(['2027-01-31', '2027-02-28', '2027-03-31', '2027-04-30', '2027-05-31']), 'dia 31 ajusta e volta');
+    eq(JSON.stringify(r.d31after), JSON.stringify(['2027-03-31', '2027-04-30', '2027-05-31', '2027-06-30']), 'dia 31 preservado após editar a série');
+    eq(JSON.stringify(r.paused), JSON.stringify(['2026-11-05']), 'pausa interrompe as próximas');
+    eq(JSON.stringify(r.resumed), JSON.stringify(['2026-11-05', '2027-01-05']), 'retomada volta a projetar (dentro da quantidade)');
+    eq(JSON.stringify(r.conv), JSON.stringify([['done'], ['planned']]), 'conversão: o original vira a 1ª ocorrência');
+    eq(r.convTx, 1, 'nenhuma cópia criada na conversão');
+    eq(r.ruleStart, '2026-11-20', 'regra começa na data do lançamento');
+    await noErrors(page);
+    await context.close();
+  });
+
+  await test('3.0 — Escopo de recorrência: editar "esta e as próximas" e excluir só uma ocorrência', async () => {
+    const { context, page } = await newPage();
+    await api(page, (repo) => repo.saveRecurrence({ type: 'expense', description: 'Streaming', amount: 3990, frequency: 'monthly', startDate: '2026-11-08' }));
+    await page.keyboard.press('ArrowRight');
+    await page.locator('.tx-row', { hasText: 'Streaming' }).locator('.tx-main').click();
+    const m = page.locator('.entry-modal');
+    await m.locator('input[name=amount]').fill('44,90');
+    await m.locator('.modal-foot button[type=submit]').click();
+    await page.locator('.scope-opt', { hasText: 'Esta e as próximas' }).click();
+    await m.waitFor({ state: 'detached' });
+    const amounts = await api(page, async (repo) => {
+      const { summarize } = await import('./js/services/finance.js');
+      const ctx = repo.context();
+      return ['2026-11', '2026-12', '2027-01', '2027-05'].map((mm) => summarize(ctx, mm).items.filter((i) => i.description === 'Streaming').map((i) => i.amount)[0]);
+    });
+    eq(JSON.stringify(amounts), JSON.stringify([3990, 4490, 4490, 4490]), 'novembro mantém o valor antigo; dezembro em diante muda');
+    await noErrors(page);
+    await context.close();
+  });
+
+  await test('3.0 — Indicadores: detalhamento reconcilia com o cartão, navega em níveis e "Simular aporte" não cria lançamentos', async () => {
+    const { context, page } = await newPage();
+    await api(page, async (repo) => {
+      const c = await repo.createNamed('accounts', { name: 'Conta', kind: 'checking' });
+      await repo.saveTransaction({ type: 'income', status: 'done', amount: 500000, date: '2026-11-05', description: 'Salário', sourceId: c.id });
+      await repo.saveTransaction({ type: 'income', status: 'planned', amount: 40000, date: '2026-11-28', description: 'Freela', sourceId: c.id });
+      await repo.saveTransaction({ type: 'expense', status: 'done', amount: 123456, date: '2026-11-10', description: 'Aluguel', sourceId: c.id });
+      await repo.saveTransaction({ type: 'expense', status: 'planned', amount: 20001, date: '2026-11-29', description: 'Luz', sourceId: c.id });
+      await repo.setPrefs({ safetyMargin: 10000 });
+    });
+    await expectKpi(page, 'Sobra projetada', 'R$ 3.965,43');
+    await page.locator('[data-kpi="surplus"]').click();
+    const d = page.locator('.modal');
+    await waitText(page, () => d.textContent().then(norm), /A soma dos componentes confere/);
+    const val = async (label) => norm(await d.locator('.kv', { hasText: label }).first().locator('.kv-value').textContent());
+    eq(await val('Receitas recebidas'), '+ R$ 5.000,00', 'receitas recebidas');
+    eq(await val('Compromissos pendentes'), '− R$ 200,01', 'pendentes');
+    assert((await d.locator('.note.is-warn').count()) === 0, 'nenhuma divergência');
+    await d.locator('.kv-link', { hasText: 'Despesas realizadas' }).click();
+    await waitText(page, () => d.locator('h2').textContent().then(norm), /^Despesas realizadas/);
+    assert(await d.locator('.tx-row', { hasText: 'Aluguel' }).count() === 1, 'lista do componente');
+    await d.getByRole('button', { name: 'Voltar', exact: true }).click();
+    await waitText(page, () => d.locator('h2').textContent().then(norm), /^Sobra projetada/);
+    await page.keyboard.press('Escape');
+    await page.locator('[data-kpi="invest"]').click();
+    await waitText(page, () => page.locator('.modal').textContent().then(norm), /Disponível para investirR\$ 3\.865,43/);
+    const before = await api(page, (repo) => repo.list('transactions').length + repo.list('investmentEvents').length);
+    await page.locator('.modal').getByRole('button', { name: 'Simular aporte' }).click();
+    await page.waitForSelector('.page-head h1:text("Investimentos")');
+    const after = await api(page, (repo) => repo.list('transactions').length + repo.list('investmentEvents').length);
+    eq(after, before, 'simulação não registra movimentações');
+    for (const k of ['inRec', 'inExp', 'exDone', 'exPend']) {
+      await page.goto(`${base}#/visao-geral`);
+      await page.locator(`[data-kpi="${k}"]`).click();
+      await waitText(page, () => page.locator('.modal').textContent().then(norm), /A soma dos componentes confere/);
+      await page.keyboard.press('Escape');
+      await page.waitForSelector('.modal', { state: 'detached' });
+    }
+    await noErrors(page);
+    await context.close();
+  });
+
+  await test('3.0 — Personalizar: teclado, tamanho, ocultar, cor, visualização, desfazer e persistência após recarregar', async () => {
+    const { context, page } = await newPage();
+    await api(page, (repo) => repo.saveTransaction({ type: 'expense', status: 'done', amount: 4500, date: '2026-11-05', description: 'Mercado' }));
+    await page.getByRole('button', { name: 'Personalizar' }).click();
+    await page.waitForSelector('.wgrid.is-editing');
+    const ids = () => page.locator('.wgrid .widget').evaluateAll((els) => els.map((e) => e.dataset.id));
+    const before = await ids();
+    const i = before.indexOf('dist-block');
+    await page.locator('.widget[data-id="dist-block"] .widget-handle').focus();
+    await page.keyboard.press('ArrowLeft');
+    const moved = await ids();
+    eq(moved.indexOf('dist-block'), i - 1, 'movido uma posição pelo teclado');
+    await page.locator('.widget[data-id="kpi-income-received"] select[aria-label^="Tamanho"]').selectOption('m');
+    await page.locator('.widget[data-id="dist-category"] select[aria-label^="Tipo de visualização"]').selectOption('table');
+    await page.locator('.widget[data-id="insights"]').getByRole('button', { name: /^Ocultar/ }).click();
+    await page.locator('.widget[data-id="kpi-surplus"]').getByRole('button', { name: /^Cor de/ }).click();
+    await page.locator('.menu-item', { hasText: 'Verde-azulado' }).click();
+    // Desfazer a última alteração (cor) e refazê-la para conferir o histórico.
+    await page.locator('.edit-bar').getByRole('button', { name: 'Desfazer' }).click();
+    eq(await page.locator('.widget[data-id="kpi-surplus"]').getAttribute('data-color'), null, 'desfazer volta a cor');
+    await page.locator('.widget[data-id="kpi-surplus"]').getByRole('button', { name: /^Cor de/ }).click();
+    await page.locator('.menu-item', { hasText: 'Verde-azulado' }).click();
+    await page.locator('.edit-bar').getByRole('button', { name: 'Concluir' }).click();
+    await page.waitForSelector('.wgrid:not(.is-editing)');
+    await page.waitForTimeout(500);
+    const check = async () => {
+      eq(await page.locator('.widget[data-id="insights"]').count(), 0, 'oculto fora da edição');
+      assert(await page.locator('.widget[data-id="kpi-income-received"]').evaluate((e) => e.classList.contains('w-m')), 'tamanho médio');
+      assert(await page.locator('.widget[data-id="dist-category"] table').count() === 1, 'visualização em tabela');
+      eq(await page.locator('.widget[data-id="kpi-surplus"]').evaluate((e) => e.style.getPropertyValue('--w-accent')), 'var(--pal-teal)', 'cor da paleta');
+      const order = await ids();
+      assert(order.indexOf('dist-block') < order.indexOf('dist-category'), `ordem preservada: ${order}`);
+    };
+    await check();
+    await page.reload();
+    await page.waitForSelector('[data-kpi]');
+    await check();
+    await noErrors(page);
+    await context.close();
+  });
+
+  await test('3.0 — Personalizar: arrastar com o mouse reordena (FLIP) e Esc cancela', async () => {
+    const { context, page } = await newPage();
+    await page.getByRole('button', { name: 'Personalizar' }).click();
+    const ids = () => page.locator('.wgrid .widget').evaluateAll((els) => els.map((e) => e.dataset.id));
+    const before = await ids();
+    const h = await page.locator('.widget[data-id="dist-source"] .widget-handle').boundingBox();
+    const target = await page.locator('.widget[data-id="dist-category"]').boundingBox();
+    await page.mouse.move(h.x + h.width / 2, h.y + h.height / 2);
+    await page.mouse.down();
+    for (let s = 1; s <= 12; s++) await page.mouse.move(h.x + (target.x + 20 - h.x) * s / 12, h.y + (target.y + target.height / 2 - h.y) * s / 12);
+    await page.waitForTimeout(100);
+    eq(await page.locator('.widget-placeholder').count(), 1, 'marcador de posição visível');
+    await page.mouse.up();
+    await page.waitForTimeout(400);
+    const after = await ids();
+    assert(after.indexOf('dist-source') < after.indexOf('dist-category'), `soltar antes do alvo: ${after}`);
+    eq(after.length, before.length, 'nenhum componente duplicado ou perdido');
+    eq(await page.locator('.widget.is-dragging, .widget-placeholder').count(), 0, 'estado de arraste limpo');
+    // Esc cancela
+    const h2 = await page.locator('.widget[data-id="upcoming"] .widget-handle').boundingBox();
+    await page.mouse.move(h2.x + 5, h2.y + 5);
+    await page.mouse.down();
+    await page.mouse.move(h2.x - 300, h2.y - 200, { steps: 6 });
+    await page.keyboard.press('Escape');
+    await page.mouse.up();
+    await page.waitForTimeout(400);
+    eq(JSON.stringify(await ids()), JSON.stringify(after), 'Esc mantém a ordem');
+    await noErrors(page);
+    await context.close();
+  });
+
+  await test('3.0 — Personalização corrompida, de versão futura ou maliciosa não impede a abertura', async () => {
+    const { context, page } = await newPage();
+    const bad = [
+      'lixo', 42, null, [], { version: 99, sections: { overview: { items: [] } } },
+      { version: 1, sections: { overview: { items: [{ type: '__proto__' }, { type: 'nao-existe', size: 'enorme' }, 'texto', { type: 'kpi-surplus', size: 'zzz', color: 'javascript:alert(1)', chart: 'pizza3d' }, { type: 'kpi-surplus' }] } } },
+      { version: 1, sections: { overview: { items: [{ type: 'dist-category', chart: 'donut', color: '#zzzzzz' }] }, planning: { options: { tabs: [{ id: 'xyz' }, { id: 'calendario', hidden: true }, null] } } } },
+    ];
+    for (const v of bad) {
+      await api(page, (repo, val) => repo.setUiLayout(val), v);
+      await page.reload();
+      await page.waitForSelector('[data-kpi]');
+      eq(await page.locator('.widget[data-id="kpi-surplus"]').count(), 1, `indicador presente com config ${JSON.stringify(v).slice(0, 40)}`);
+      const n = await page.locator('.wgrid .widget').evaluateAll((els) => els.map((e) => e.dataset.id));
+      eq(new Set(n).size, n.length, 'sem componentes duplicados');
+      assert(!(await page.locator('.widget[data-id="kpi-surplus"]').evaluate((e) => e.style.getPropertyValue('--w-accent'))).includes('javascript'), 'cor inválida descartada');
+      await page.goto(`${base}#/planejamento`);
+      await page.waitForSelector('.subnav-link');
+      await page.goto(`${base}#/visao-geral`);
+    }
+    eq(await page.evaluate(() => ({}).polluted), undefined, 'sem poluição de protótipo');
+    await noErrors(page);
+    await context.close();
+  });
+
+  await test('3.0 — Distribuição: rosca só sem negativos; com estorno maior que o gasto vira barras com aviso', async () => {
+    const { context, page } = await newPage();
+    await api(page, async (repo) => {
+      const cat = await repo.createNamed('categories', { name: 'Eletrônicos', type: 'expense' });
+      const cat2 = await repo.createNamed('categories', { name: 'Feira', type: 'expense' });
+      await repo.saveTransaction({ type: 'expense', status: 'done', amount: 10000, date: '2026-11-03', description: 'Fone', categoryId: cat.id });
+      await repo.saveTransaction({ type: 'expense', status: 'done', amount: 5000, date: '2026-11-04', description: 'Feira', categoryId: cat2.id });
+      await repo.setUiLayout({ version: 1, sections: { overview: { items: [{ type: 'dist-category', chart: 'donut', size: 'm' }], known: [] } } });
+    });
+    await page.reload();
+    await page.waitForSelector('.widget[data-id="dist-category"] .donut');
+    const txt = norm(await page.locator('.widget[data-id="dist-category"]').textContent());
+    assert(txt.includes('R$ 100,00') && txt.includes('R$ 50,00'), 'valores visíveis na legenda');
+    await api(page, async (repo) => {
+      const cat = repo.list('categories').find((c) => c.name === 'Eletrônicos');
+      await repo.saveTransaction({ type: 'refund', status: 'done', amount: 25000, date: '2026-11-10', description: 'Estorno maior', categoryId: cat.id });
+    });
+    await page.waitForSelector('.widget[data-id="dist-category"] .bars');
+    eq(await page.locator('.widget[data-id="dist-category"] .donut').count(), 0, 'rosca desativada com negativos');
+    await waitText(page, () => page.locator('.widget[data-id="dist-category"]').textContent().then(norm), /rosca foi trocada por barras/);
+    await noErrors(page);
+    await context.close();
+  });
+
+  await test('3.0 — Lançamentos: tabela com colunas organizáveis, campos visíveis na lista e preferências persistentes', async () => {
+    const { context, page } = await newPage();
+    await api(page, async (repo) => {
+      const b = await repo.createNamed('blocks', { name: 'Casa' });
+      await repo.saveTransaction({ type: 'expense', status: 'done', amount: 4321, date: '2026-11-12', description: 'Lâmpada', blockId: b.id });
+    });
+    await page.goto(`${base}#/lancamentos`);
+    await page.getByRole('button', { name: 'Exibição' }).click();
+    const m = page.locator('.modal', { hasText: 'Exibição dos lançamentos' });
+    await m.locator('label', { hasText: 'Bloco' }).locator('input').uncheck();
+    await page.waitForTimeout(300);
+    assert(!norm(await page.locator('.tx-row', { hasText: 'Lâmpada' }).locator('.tx-meta').textContent()).includes('Casa'), 'bloco oculto na lista');
+    await m.getByRole('radio', { name: 'Tabela' }).click();
+    await page.waitForSelector('.entries-table');
+    await m.getByRole('button', { name: 'Organizar colunas…' }).click();
+    const a = page.locator('.modal', { hasText: 'Colunas da tabela' });
+    await a.locator('.sortable-row', { hasText: 'Situação' }).locator('input').uncheck();
+    await a.locator('.sortable-row', { hasText: 'Valor' }).getByRole('button', { name: /para cima/ }).click();
+    await a.getByRole('button', { name: 'Salvar' }).click();
+    await page.waitForTimeout(500);
+    const heads = async () => page.locator('.entries-table thead th').evaluateAll((els) => els.map((e) => e.textContent));
+    const hs = await heads();
+    eq(hs.includes('Situação'), false, 'coluna oculta');
+    assert(hs.includes('Descrição') && hs.includes('Valor'), 'colunas obrigatórias sempre visíveis');
+    await page.reload();
+    await page.waitForSelector('.entries-table');
+    eq(JSON.stringify(await heads()), JSON.stringify(hs), 'colunas persistem após recarregar');
+    await page.locator('.entries-table tbody tr', { hasText: 'Lâmpada' }).click();
+    await page.waitForSelector('.entry-modal');
+    await noErrors(page);
+    await context.close();
+  });
+
+  await test('3.0 — Configurações: densidade persiste, ordem dos grupos e “Restaurar toda a aparência” não toca nos dados', async () => {
+    const { context, page } = await newPage();
+    await api(page, (repo) => repo.saveTransaction({ type: 'expense', status: 'done', amount: 999, date: '2026-11-02', description: 'Café' }));
+    await page.goto(`${base}#/configuracoes`);
+    const fsDefault = await page.evaluate(() => getComputedStyle(document.body).fontSize);
+    await page.getByRole('radio', { name: 'Compacta' }).click();
+    eq(await page.evaluate(() => document.documentElement.dataset.density), 'compact', 'densidade aplicada');
+    const fsCompact = await page.evaluate(() => getComputedStyle(document.body).fontSize);
+    assert(parseFloat(fsCompact) < parseFloat(fsDefault), `texto menor (${fsCompact} < ${fsDefault})`);
+    await page.reload();
+    await page.waitForSelector('.settings-nav');
+    eq(await page.evaluate(() => document.documentElement.dataset.density), 'compact', 'densidade após recarregar');
+    eq(await page.evaluate(() => getComputedStyle(document.documentElement).zoom), '1', 'sem zoom');
+    await page.getByRole('button', { name: 'Organizar' }).click();
+    const m = page.locator('.modal', { hasText: 'Ordem dos grupos' });
+    eq(await m.locator('input[type=checkbox]:not([disabled])').count(), 0, 'nenhum grupo pode ser ocultado');
+    await m.locator('.sortable-row', { hasText: 'Dados e backup' }).getByRole('button', { name: /para cima/ }).click();
+    await m.getByRole('button', { name: 'Salvar' }).click();
+    await page.waitForTimeout(400);
+    const groups = await page.locator('.settings-nav a').evaluateAll((els) => els.map((e) => e.dataset.group));
+    assert(groups.indexOf('dados') < groups.indexOf('classificacao'), `grupo movido: ${groups}`);
+    await page.locator('#cfg-personalizacao').getByRole('button', { name: 'Restaurar toda a aparência' }).click();
+    await page.locator('.modal').getByRole('button', { name: 'Restaurar aparência' }).click();
+    await waitText(page, '.toast', /Aparência restaurada/);
+    eq(await page.evaluate(() => document.documentElement.dataset.density), 'default', 'densidade padrão');
+    eq(await api(page, (repo) => repo.list('transactions').length), 1, 'dados financeiros intactos');
+    await noErrors(page);
+    await context.close();
+  });
+
+  await test('3.0 — Backup: nome do arquivo, metadados, checksum, personalização incluída e restaurada; adulterado é rejeitado', async () => {
+    const a = await newPage();
+    await api(a.page, async (repo) => {
+      await repo.saveTransaction({ type: 'expense', status: 'done', amount: 1234, date: '2026-11-03', description: 'Pão' });
+      await repo.setUiLayout({ version: 1, sections: { overview: { items: [{ type: 'insights', hidden: true }], known: ['insights'] } } });
+    });
+    await a.page.goto(`${base}#/configuracoes/dados`);
+    const dl = await exportBackupUI(a.page);
+    assert(/^Fluxo-backup-\d{4}-\d{2}-\d{2}_\d{2}-\d{2}\.json$/.test(dl.suggestedFilename()), `nome do arquivo: ${dl.suggestedFilename()}`);
+    const file = join(ARTIFACTS, 'backup-v3.json');
+    await dl.saveAs(file);
+    const b = JSON.parse(await readFile(file, 'utf8'));
+    eq(b.format, 'fluxo-backup', 'formato');
+    eq(b.version, 2, 'versão do formato');
+    assert(/^[0-9a-f]{64}$/.test(b.checksum?.value || ''), 'checksum SHA-256');
+    eq(b.counts.transactions, 1, 'contagens no cabeçalho');
+    assert(b.data.meta.some((m) => m.key === 'ui.layout'), 'personalização incluída');
+    eq(await a.page.locator('.settings-row', { hasText: 'Último backup gerado' }).count() > 0, true, 'data do último backup exibida');
+    await a.context.close();
+
+    const t = await newPage();
+    const tampered = structuredClone(b);
+    tampered.data.transactions[0].amount = 1;
+    const tf = join(ARTIFACTS, 'backup-adulterado.json');
+    await writeFile(tf, JSON.stringify(tampered));
+    await t.page.goto(`${base}#/configuracoes/dados`);
+    const [ch] = await Promise.all([t.page.waitForEvent('filechooser'), t.page.getByRole('button', { name: 'Restaurar backup' }).click()]);
+    await ch.setFiles(tf);
+    await waitText(t.page, () => t.page.locator('.modal').textContent().then(norm), /Backup inválido.*(checksum|alterado|corrompido)/i);
+    await t.page.getByRole('button', { name: 'Entendi' }).click();
+    for (let k = 0; k < 2; k++) {
+      const [c2] = await Promise.all([t.page.waitForEvent('filechooser'), t.page.getByRole('button', { name: 'Restaurar backup' }).click()]);
+      await c2.setFiles(file);
+      await t.page.waitForSelector('.modal', { hasText: 'Restaurar backup (arquivo)?' });
+      await waitText(t.page, () => t.page.locator('.modal').textContent().then(norm), /SHA-256 conferido/);
+      if (k === 1) eq(await t.page.locator('.modal label.check input').isChecked(), true, 'oferece backup prévio quando há dados');
+      if (k === 1) await t.page.locator('.modal label.check input').uncheck();
+      await t.page.getByRole('button', { name: 'Restaurar', exact: true }).click();
+      await waitText(t.page, '.toast', /Backup restaurado/);
+    }
+    eq(await api(t.page, (repo) => repo.list('transactions').length), 1, 'restaurar duas vezes não duplica');
+    const snaps = await api(t.page, async (repo) => (await repo.listSnapshots()).length);
+    assert(snaps >= 1, 'snapshot interno do estado anterior');
+    await t.page.goto(`${base}#/visao-geral`);
+    await t.page.waitForSelector('[data-kpi]');
+    eq(await t.page.locator('.widget[data-id="insights"]').count(), 0, 'personalização restaurada do backup');
+    await noErrors(t.page);
+    await t.context.close();
+  });
+
+  await test('3.0 — Backup protegido por senha: exporta, pede a senha, rejeita senha errada e restaura', async () => {
+    const a = await newPage();
+    await api(a.page, (repo) => repo.saveTransaction({ type: 'expense', status: 'done', amount: 777, date: '2026-11-03', description: 'Secreto' }));
+    await a.page.goto(`${base}#/configuracoes/dados`);
+    await a.page.getByRole('button', { name: 'Exportar backup completo' }).click();
+    const m = a.page.locator('.modal', { hasText: 'Exportar backup completo' });
+    await m.getByRole('radio', { name: 'Protegido por senha' }).click();
+    await m.locator('input[type=password]').nth(0).fill('senha-forte-123');
+    await m.locator('input[type=password]').nth(1).fill('senha-forte-123');
+    const [dl] = await Promise.all([a.page.waitForEvent('download'), m.getByRole('button', { name: 'Gerar arquivo' }).click()]);
+    const file = join(ARTIFACTS, 'backup-protegido.json');
+    await dl.saveAs(file);
+    const raw = await readFile(file, 'utf8');
+    assert(!raw.includes('Secreto'), 'conteúdo não aparece em texto claro');
+    eq(JSON.parse(raw).format, 'fluxo-backup-encrypted', 'envelope criptografado');
+    await a.context.close();
+    const b = await newPage();
+    await b.page.goto(`${base}#/configuracoes/dados`);
+    for (const [pw, ok] of [['errada-123', false], ['senha-forte-123', true]]) {
+      const [ch] = await Promise.all([b.page.waitForEvent('filechooser'), b.page.getByRole('button', { name: 'Restaurar backup' }).click()]);
+      await ch.setFiles(file);
+      const pm = b.page.locator('.modal', { hasText: 'Backup protegido' });
+      await pm.locator('input[type=password]').fill(pw);
+      await pm.getByRole('button', { name: 'Abrir' }).click();
+      if (!ok) { await waitText(b.page, () => b.page.locator('.modal').textContent().then(norm), /Senha incorreta/); await b.page.getByRole('button', { name: 'Entendi' }).click(); continue; }
+      await b.page.waitForSelector('.modal', { hasText: 'Restaurar backup (arquivo)?' });
+      await b.page.getByRole('button', { name: 'Restaurar', exact: true }).click();
+      await waitText(b.page, '.toast', /Backup restaurado/);
+    }
+    eq(await api(b.page, (repo) => repo.list('transactions').map((t) => t.description).join()), 'Secreto', 'restaurado com a senha correta');
+    await noErrors(b.page);
+    await b.context.close();
+  });
+
+  await test('3.0 — Restauração interrompida no meio da gravação não altera a base (atomicidade)', async () => {
+    const { context, page } = await newPage();
+    await api(page, (repo) => repo.saveTransaction({ type: 'expense', status: 'done', amount: 100, date: '2026-11-03', description: 'Original' }));
+    const res = await api(page, async (repo) => {
+      const rows = Array.from({ length: 50 }, (_, i) => ({ id: `n${i}`, type: 'expense', status: 'done', amount: 100 + i, date: '2026-11-04', month: '2026-11', description: `Novo ${i}`, createdAt: 1, updatedAt: 1 }));
+      const orig = IDBObjectStore.prototype.add;
+      let n = 0;
+      IDBObjectStore.prototype.add = function (...args) { if (++n === 30) throw new Error('falha simulada no meio da gravação'); return orig.apply(this, args); };
+      let error = null;
+      try { await repo.importData({ transactions: rows, meta: [] }); } catch (e) { error = e.message; }
+      IDBObjectStore.prototype.add = orig;
+      const { loadAll } = await import('./js/database/db.js');
+      const disk = await loadAll();
+      return { error, disk: disk.transactions.map((t) => t.description), mem: repo.list('transactions').map((t) => t.description) };
+    });
+    assert(res.error, 'erro informado');
+    eq(JSON.stringify(res.disk), '["Original"]', 'banco intacto');
+    eq(JSON.stringify(res.mem), '["Original"]', 'memória intacta');
+    page.errors = page.errors.filter((e) => !/falha simulada/.test(e));
+    await noErrors(page);
+    await context.close();
+  });
+
+  await test('3.0 — Concorrência: edição em outra aba gera conflito (sem sobrescrita silenciosa) e a restauração avisa as abas', async () => {
+    const { context, page } = await newPage();
+    const tx = await api(page, (repo) => repo.saveTransaction({ type: 'expense', status: 'done', amount: 1000, date: '2026-11-03', description: 'Compartilhado' }));
+    const other = await context.newPage();
+    other.errors = [];
+    other.on('pageerror', (e) => other.errors.push(e.message));
+    await other.goto(base);
+    await other.waitForSelector('[data-kpi]');
+    await api(other, (repo, id) => repo.saveTransaction({ ...repo.get('transactions', id), amount: 2000 }, { baseRev: repo.get('transactions', id).rev || 0 }), tx.id);
+    const r = await api(page, async (repo, t) => {
+      try { await repo.saveTransaction({ ...t, amount: 3000 }, { baseRev: t.rev || 0 }); return 'gravou'; } catch (e) { return e.name + ': ' + e.message; }
+    }, tx);
+    assert(/Conflict|alterad/i.test(r), `conflito detectado (${r})`);
+    await waitText(page, async () => String(await api(page, (repo, id) => repo.get('transactions', id).amount, tx.id)), '2000');
+    // Restauração em uma aba recarrega os dados na outra.
+    await api(other, (repo) => repo.importData({ transactions: [{ id: 'z', type: 'expense', status: 'done', amount: 5, date: '2026-11-01', month: '2026-11', description: 'Restaurado', createdAt: 1, updatedAt: 1 }], meta: [] }));
+    await waitText(page, async () => String(await api(page, (repo) => repo.list('transactions').map((t) => t.description).join())), 'Restaurado');
+    eq(other.errors.length, 0, 'sem erros na outra aba');
+    await noErrors(page);
+    await context.close();
+  });
+
+  await test('3.0 — Apagar dados financeiros mantém a aparência e guarda snapshot', async () => {
+    const { context, page } = await newPage();
+    await api(page, async (repo) => {
+      await repo.saveTransaction({ type: 'expense', status: 'done', amount: 1000, date: '2026-11-03', description: 'X' });
+      await repo.setUiLayout({ version: 1, sections: { overview: { items: [{ type: 'insights', hidden: true }], known: ['insights'] } } });
+      await repo.wipeAll();
+    });
+    const st = await api(page, async (repo) => ({ tx: repo.list('transactions').length, layout: Boolean(repo.get('meta', 'ui.layout')), snaps: (await repo.listSnapshots()).length }));
+    eq(st.tx, 0, 'lançamentos apagados');
+    eq(st.layout, true, 'personalização mantida');
+    assert(st.snaps >= 1, 'snapshot interno');
+    await noErrors(page);
+    await context.close();
+  });
+
+  await test('3.0 — Segurança: CSP sem violações em todas as seções; entradas hostis tratadas como texto; arquivo com __proto__ rejeitado', async () => {
+    const context = await browser.newContext({ viewport: { width: 1360, height: 900 }, locale: 'pt-BR', timezoneId: 'America/Sao_Paulo' });
+    await context.clock.setFixedTime(NOW);
+    await context.addInitScript(() => { window.__csp = []; document.addEventListener('securitypolicyviolation', (e) => window.__csp.push(`${e.violatedDirective} ${e.blockedURI}`)); });
+    const page = await context.newPage();
+    page.errors = [];
+    page.on('pageerror', (e) => page.errors.push(e.message));
+    await page.goto(base);
+    await page.waitForSelector('[data-kpi]');
+    const hostile = ['<script>window.__x=1</script>', '<img src=x onerror="window.__x=1">', 'javascript:window.__x=1', '"><svg onload=window.__x=1>', '{{constructor.constructor("window.__x=1")()}}', 'A'.repeat(5000), '🚀 ção ñ € ‮texto'];
+    await api(page, async (repo, list) => {
+      for (const d of list) await repo.saveTransaction({ type: 'expense', status: 'done', amount: 100, date: '2026-11-03', description: d });
+      await repo.createNamed('categories', { name: '<b onmouseover=alert(1)>cat</b>', type: 'expense' });
+    }, hostile);
+    const lens = await api(page, (repo) => repo.list('transactions').map((t) => t.description.length));
+    assert(Math.max(...lens) <= 200, 'textos longos limitados');
+    for (const r of ['visao-geral', 'lancamentos', 'planejamento/calendario', 'planejamento/projecao', 'planejamento/simulacoes', 'planejamento/recorrencias', 'planejamento/programadas', 'planejamento/parcelamentos', 'planejamento/orcamentos', 'investimentos', 'configuracoes']) {
+      await page.goto(`${base}#/${r}`);
+      await page.waitForSelector('.page-head');
+      await page.waitForTimeout(150);
+    }
+    await page.goto(`${base}#/lancamentos`);
+    await page.getByRole('button', { name: 'Exibição' }).click();
+    await page.getByRole('radio', { name: 'Tabela' }).click();
+    await page.keyboard.press('Escape');
+    eq(await page.evaluate(() => window.__x), undefined, 'nenhum script do usuário executado');
+    eq(await page.locator('.view script, .view img[src=x], .view svg[onload]').count(), 0, 'nenhum elemento injetado');
+    const evil = join(ARTIFACTS, 'backup-proto.json');
+    await writeFile(evil, '{"format":"guia-financeiro-backup","version":1,"data":{"transactions":[{"id":"a","type":"expense","status":"done","amount":1,"date":"2026-11-01","month":"2026-11","description":"x","__proto__":{"polluted":true}}],"meta":[]}}');
+    await page.goto(`${base}#/configuracoes/dados`);
+    const [ch] = await Promise.all([page.waitForEvent('filechooser'), page.getByRole('button', { name: 'Restaurar backup' }).click()]);
+    await ch.setFiles(evil);
+    await page.waitForSelector('.modal', { hasText: 'Backup inválido' });
+    await waitText(page, () => page.locator('.modal').textContent().then(norm), /chave não permitida: __proto__/);
+    eq(await page.evaluate(() => ({}).polluted), undefined, 'protótipo não poluído');
+    eq(JSON.stringify(await page.evaluate(() => window.__csp)), '[]', 'sem violações de CSP');
+    eq(page.errors.length, 0, `erros: ${page.errors.join(' | ')}`);
+    await context.close();
+  });
+
+  await test('3.0 — Publicação em /fluxo/ (repositório renomeado): todas as seções abrem sem erros', async () => {
+    const alt = await startServer({ base: '/fluxo/' });
+    const context = await browser.newContext({ viewport: { width: 1280, height: 860 }, locale: 'pt-BR', timezoneId: 'America/Sao_Paulo' });
+    await context.clock.setFixedTime(NOW);
+    const page = await context.newPage();
+    page.errors = [];
+    page.on('pageerror', (e) => page.errors.push(e.message));
+    page.on('response', (r) => { if (r.status() >= 400) page.errors.push(`HTTP ${r.status()} ${r.url()}`); });
+    for (const r of ['visao-geral', 'lancamentos', 'planejamento', 'investimentos', 'configuracoes/sobre']) {
+      await page.goto(`${alt.url}#/${r}`);
+      await page.waitForSelector('.page-head');
+    }
+    const man = await page.evaluate(async () => (await fetch('manifest.webmanifest')).json());
+    eq(man.start_url, './', 'manifest relativo');
+    eq(await page.evaluate(() => document.querySelector('.about-brand img')?.naturalWidth > 0), true, 'símbolo carregado');
+    eq(page.errors.length, 0, `erros: ${page.errors.join(' | ')}`);
+    await context.close();
+    alt.server.close();
+  });
+
+  await test('3.0 — Movimento reduzido e densidades em celular: personalização e detalhamento funcionam sem rolagem horizontal', async () => {
+    for (const density of ['compact', 'comfortable']) {
+      const { context, page } = await newPage({ ...devices['iPhone 13'], reducedMotion: 'reduce' });
+      await page.evaluate((d) => localStorage.setItem('gf.density', d), density);
+      await page.reload();
+      await page.waitForSelector('[data-kpi]');
+      eq(await page.evaluate(() => document.documentElement.dataset.density), density, 'densidade aplicada no carregamento');
+      await page.locator('[data-kpi="surplus"]').click();
+      await page.waitForSelector('.modal');
+      await page.keyboard.press('Escape');
+      await page.getByRole('button', { name: 'Personalizar' }).click();
+      await page.waitForSelector('.wgrid.is-editing');
+      for (const r of ['visao-geral', 'lancamentos', 'planejamento/calendario', 'investimentos', 'configuracoes']) {
+        if (r !== 'visao-geral') { await page.goto(`${base}#/${r}`); await page.waitForSelector('.page-head'); }
+        const over = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+        assert(over <= 1, `rolagem horizontal em ${r} (${density}): ${over}px`);
+      }
+      await noErrors(page);
+      await context.close();
+    }
+  });
+
   await browser.close();
   server.close();
   const failed = results.filter((r) => !r.ok);

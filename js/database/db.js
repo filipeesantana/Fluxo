@@ -1,4 +1,4 @@
-import { DB_NAME, DB_VERSION, MIGRATIONS, STORES } from './schema.js';
+import { DB_NAME, DB_VERSION, MIGRATIONS, STORES, SNAPSHOT_STORE } from './schema.js';
 
 let dbPromise = null;
 let onVersionChange = null;
@@ -112,26 +112,75 @@ export async function getByKeys(store, keys) {
   return out;
 }
 
-/** Grava/remove um conjunto de alterações atomicamente. ops: [{store, put|del}] */
+export class ConflictError extends Error {
+  constructor(message, store, key) { super(message); this.name = 'ConflictError'; this.store = store; this.key = key; }
+}
+
+/**
+ * Grava/remove um conjunto de alterações em UMA transação (tudo ou nada).
+ * ops: [{ store, put | del, expectRev? }]
+ * expectRev (controle de concorrência otimista): número de revisão que o
+ * registro deve ter no banco no momento da gravação, ou 'absent' quando ele
+ * não deve existir. A verificação acontece dentro da própria transação; se
+ * outra aba alterou o registro, tudo é abortado e nada é gravado.
+ */
 export function commit(ops) {
   const names = [...new Set(ops.map((o) => o.store))];
   if (!names.length) return Promise.resolve();
-  return withTx(names, 'readwrite', (s) => {
-    for (const op of ops) {
+  let conflict = null;
+  return withTx(names, 'readwrite', (s, tx) => {
+    const write = (op) => {
       if (op.put) s[op.store].put(op.put);
       else if (op.del != null) s[op.store].delete(op.del);
+    };
+    for (const op of ops) {
+      if (op.expectRev === undefined) { write(op); continue; }
+      const key = op.put ? s[op.store].keyPath && op.put[s[op.store].keyPath] : op.del;
+      const req = s[op.store].get(key);
+      req.onsuccess = () => {
+        if (conflict) return;
+        const cur = req.result;
+        const ok = op.expectRev === 'absent' ? !cur : cur && (cur.rev || 0) === op.expectRev;
+        if (!ok) {
+          conflict = new ConflictError(cur ? 'Este registro foi alterado em outra aba.' : 'Este registro foi excluído em outra aba.', op.store, key);
+          try { tx.abort(); } catch { /* já abortada */ }
+          return;
+        }
+        write(op);
+      };
     }
-  });
+  }).catch((err) => { throw conflict || err; });
 }
 
-/** Substitui todo o conteúdo do banco em uma única transação. */
-export function replaceAll(data) {
-  return withTx(STORES, 'readwrite', (s) => {
+/**
+ * Substitui todo o conteúdo do banco em uma única transação. Antes, opcionalmente,
+ * guarda um snapshot interno do estado anterior NA MESMA transação.
+ */
+export function replaceAll(data, { snapshot = null, keepSnapshots = 3 } = {}) {
+  const names = snapshot ? [...STORES, SNAPSHOT_STORE] : STORES;
+  return withTx(names, 'readwrite', (s) => {
+    if (snapshot) {
+      s[SNAPSHOT_STORE].put(snapshot);
+      const req = s[SNAPSHOT_STORE].getAllKeys();
+      req.onsuccess = () => {
+        const keys = req.result.filter((k) => k !== snapshot.id).sort();
+        for (const k of keys.slice(0, Math.max(0, keys.length - (keepSnapshots - 1)))) s[SNAPSHOT_STORE].delete(k);
+      };
+    }
     for (const name of STORES) {
       s[name].clear();
       for (const row of data[name] || []) s[name].add(row);
     }
   });
+}
+
+export async function listSnapshots() {
+  let rows = [];
+  await withTx([SNAPSHOT_STORE], 'readonly', (s) => {
+    const req = s[SNAPSHOT_STORE].getAll();
+    req.onsuccess = () => { rows = req.result; };
+  });
+  return rows.sort((a, b) => (a.id < b.id ? 1 : -1));
 }
 
 export async function requestPersistence() {

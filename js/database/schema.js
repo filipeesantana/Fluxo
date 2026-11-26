@@ -2,8 +2,8 @@
 // cada função leva o banco da versão (n − 1) para n sem apagar dados.
 
 export const DB_NAME = 'guia-financeiro.pessoal';
-export const DB_VERSION = 2;
-export const APP_VERSION = '2.0.0';
+export const DB_VERSION = 3;
+export const APP_VERSION = '3.0.0';
 
 export const STORES = [
   'transactions', 'categories', 'blocks', 'accounts', 'recurrences',
@@ -11,6 +11,8 @@ export const STORES = [
 ];
 
 export const DATA_STORES = STORES.filter((s) => s !== 'meta');
+// Snapshots internos de recuperação: fora de STORES (não entram em backups nem são limpos na restauração).
+export const SNAPSHOT_STORE = 'snapshots';
 
 export const MIGRATIONS = {
   1(db) {
@@ -55,5 +57,11 @@ export const MIGRATIONS = {
         store.createIndex('occurrence', ['recurrenceId', 'occurrenceDate'], { unique: true });
       }
     };
+  },
+
+  // v3: armazenamento de snapshots internos (estado anterior a restaurações).
+  // Apenas acrescenta; nenhum dado existente é lido, alterado ou removido.
+  3(db) {
+    if (!db.objectStoreNames.contains('snapshots')) db.createObjectStore('snapshots', { keyPath: 'id' });
   },
 };

@@ -11,6 +11,9 @@ import { field, moneyInput, segmented, readDecimal, checkbox } from '../componen
 import { openMenu } from '../components/menu.js';
 import { pageHead, panel, emptyState, accountOptions, capitalize, kv } from './common.js';
 import { readPref, writePref } from '../state.js';
+import { widgetGrid } from '../components/layout.js';
+import { customizeButton } from './overview.js';
+import { openKpiDetail } from './drilldown.js';
 
 const round = (x) => Math.round(x);
 
@@ -54,17 +57,12 @@ export function renderInvestments(root) {
   const anyRate = invs.some((i) => Number(i.annualRate));
   const s = summarize(ctx, cm);
 
+  const rerender = () => renderInvestments(root);
   const head = pageHead('Investimentos', {
     sub: 'Patrimônio, metas e simulações. Rentabilidade é sempre opcional.',
-    actions: [h('button', { class: 'btn', type: 'button', onclick: () => openInvestmentForm() }, icon('plus', 'icon-sm'), 'Investimento ou reserva'),
+    actions: [customizeButton('investments', rerender), h('button', { class: 'btn', type: 'button', onclick: () => openInvestmentForm() }, icon('plus', 'icon-sm'), 'Investimento ou reserva'),
       h('button', { class: 'btn btn-primary', type: 'button', onclick: () => openGoalForm() }, icon('target', 'icon-sm'), 'Nova meta')],
   });
-
-  const kpis = h('div', { class: 'kpi-grid' },
-    kpiBox('Patrimônio informado', totalInformed, 'invest', 'wallet', 'saldos registrados por você'),
-    anyRate ? kpiBox('Estimado hoje', round(totalEstimated), 'plan', 'trend', 'aplica a rentabilidade informada (estimativa)') : kpiBox('Investimentos', invs.length, 'plan', 'layers', 'reservas e aplicações cadastradas', true),
-    kpiBox('Aportado neste mês', s.contributed, 'neutral', 'in', s.withdrawn ? `${formatMoney(s.withdrawn)} resgatados` : 'aportes não são despesa'),
-    kpiBox('Disponível para aportes', s.availableToInvest, 'accent', 'chart', `sobra livre de ${formatMonthShort(cm)}`));
 
   const goals = repo.list('goals').filter((g) => !g.archived);
   const linkCount = new Map();
@@ -98,20 +96,32 @@ export function renderInvestments(root) {
           h('td', { class: 'right' }, h('div', { class: 'row row-end' }, h('button', { class: 'btn btn-sm', type: 'button', onclick: () => openEventForm(inv, 'contribution') }, icon('plus', 'icon-sm'), 'Aporte'), more)));
       })))) : h('div', { class: 'empty-block' }, 'Cadastre reservas e aplicações com o saldo atual. Não há integração com bancos ou corretoras.',
       h('button', { class: 'btn btn-sm', type: 'button', onclick: () => openInvestmentForm() }, icon('plus', 'icon-sm'), 'Cadastrar investimento')),
-    invs.length ? patrimonyChart(invs, events) : null);
+  );
 
-  put(root, head, kpis, goalsPanel, simulator(s, totalInformed), portfolio);
+  const KPI = { size: 's', sizes: ['s', 'm', 'l'], color: true };
+  const registry = {
+    'kpi-patrimony': { ...KPI, title: 'Patrimônio informado', render: () => kpiBox('Patrimônio informado', totalInformed, 'invest', 'wallet', 'saldos registrados por você') },
+    'kpi-estimated': { ...KPI, title: anyRate ? 'Estimado hoje' : 'Investimentos', render: () => (anyRate ? kpiBox('Estimado hoje', round(totalEstimated), 'plan', 'trend', 'aplica a rentabilidade informada (estimativa)') : kpiBox('Investimentos', invs.length, 'plan', 'layers', 'reservas e aplicações cadastradas', true)) },
+    'kpi-contributed': { ...KPI, title: 'Aportado neste mês', render: () => kpiBox('Aportado neste mês', s.contributed, 'neutral', 'in', s.withdrawn ? `${formatMoney(s.withdrawn)} resgatados` : 'aportes não são despesa') },
+    'kpi-available': { ...KPI, title: 'Disponível para aportes', render: () => kpiBox('Disponível para aportes', s.availableToInvest, 'accent', 'chart', `sobra livre de ${formatMonthShort(cm)} · ver cálculo`, false, () => openKpiDetail('invest', cm)) },
+    goals: { title: 'Metas', description: 'Progresso e previsão de cada meta.', size: 'f', sizes: ['l', 'xl', 'f'], render: () => goalsPanel },
+    simulator: { title: 'Simulador', description: 'Simulação de aportes; nada é registrado.', size: 'f', sizes: ['xl', 'f'], render: () => simulator(s, totalInformed) },
+    portfolio: { title: 'Patrimônio', description: 'Investimentos e reservas cadastrados.', size: 'f', sizes: ['l', 'xl', 'f'], render: () => portfolio },
+    'patrimony-chart': { title: 'Evolução do patrimônio', description: 'Saldo informado no fim de cada mês.', size: 'f', sizes: ['l', 'xl', 'f'], charts: ['area', 'line', 'table'], chart: 'area', when: () => invs.length > 0,
+      render: (cfg) => panel('Evolução do patrimônio', { hint: 'saldo informado no fim de cada mês · últimos 12 meses' }, patrimonyChart(invs, events, cfg.chart) || h('div', { class: 'empty-block' }, 'Registre saldos para ver a evolução.')) },
+  };
+  put(root, head, widgetGrid({ section: 'investments', registry, rerender }));
 }
 
-function kpiBox(label, value, tone, iconName, sub, plain = false) {
-  return h('div', { class: `kpi kpi-${tone}` },
-    h('div', { class: 'kpi-top' }, h('span', { class: 'kpi-icon' }, icon(iconName)), h('span', { class: 'kpi-label' }, label)),
+function kpiBox(label, value, tone, iconName, sub, plain = false, onOpen = null) {
+  return h(onOpen ? 'button' : 'div', { class: `kpi kpi-${tone}`, type: onOpen ? 'button' : null, onclick: onOpen },
+    h('span', { class: 'kpi-top' }, h('span', { class: 'kpi-icon' }, icon(iconName)), h('span', { class: 'kpi-label' }, label), onOpen ? h('span', { class: 'kpi-more', 'aria-hidden': 'true' }, icon('chev-right', 'icon-sm')) : null),
     h('span', { class: 'kpi-value num' }, plain ? String(value) : formatMoney(value)),
     h('span', { class: 'kpi-sub' }, sub));
 }
 
 /** Evolução do patrimônio informado nos últimos 12 meses (saldo no fim de cada mês). */
-function patrimonyChart(invs, events) {
+function patrimonyChart(invs, events, mode = 'area') {
   const cm = currentMonth();
   const months = Array.from({ length: 12 }, (_, i) => addMonths(cm, i - 11));
   const vals = months.map((m) => {
@@ -120,8 +130,12 @@ function patrimonyChart(invs, events) {
     return invs.reduce((sum, inv) => sum + investmentValue(inv, evs, end).informed, 0);
   });
   if (!vals.some((v) => v)) return null;
-  return h('div', { style: { marginTop: '16px' } }, h('div', { class: 'faint small', style: { marginBottom: '6px' } }, 'Patrimônio informado no fim de cada mês'),
-    lineChart([{ label: 'Patrimônio', values: vals, cls: 's-invest', area: true }], months.map((m) => capitalize(formatMonthShort(m))), { height: 180 }));
+  const labels = months.map((m) => capitalize(formatMonthShort(m)));
+  if (mode === 'table') {
+    return h('div', { class: 'table-wrap' }, h('table', { class: 'table table-compact' }, h('thead', null, h('tr', null, h('th', null, 'Mês'), h('th', { class: 'right' }, 'Patrimônio'), h('th', { class: 'right' }, 'Variação'))),
+      h('tbody', null, ...vals.map((v, i) => h('tr', null, h('td', null, labels[i]), h('td', { class: 'right num' }, formatMoney(v)), h('td', { class: `right num ${i && v - vals[i - 1] < 0 ? 'neg' : 'faint'}` }, i ? `${v - vals[i - 1] >= 0 ? '+' : '−'} ${formatMoney(Math.abs(v - vals[i - 1]))}` : '—'))))));
+  }
+  return lineChart([{ label: 'Patrimônio', values: vals, cls: 's-invest', area: mode !== 'line' }], labels, { height: 190 });
 }
 
 function goalCurrent(g, values) {
@@ -329,13 +343,13 @@ async function removeInvestment(inv) {
   try { await repo.deleteInvestment(inv.id); toast('Investimento excluído'); } catch (err) { toastError(err); }
 }
 
-export function openGoalForm(g = null) {
+export function openGoalForm(g = null, suggest = {}) {
   const invs = repo.list('investments').filter((i) => !i.archived);
   const s = summarize(repo.context(), currentMonth());
   const name = h('input', { class: 'input', value: g?.name || '', maxlength: 80, placeholder: 'Ex.: Entrada da moto' });
   const target = moneyInput({ value: g?.target ?? null });
   const initial = moneyInput({ value: g?.initial ?? null, allowZero: true, placeholder: '0,00' });
-  const monthly = moneyInput({ value: g?.monthly ?? null, allowZero: true });
+  const monthly = moneyInput({ value: g?.monthly ?? (suggest.monthly || null), allowZero: true });
   const rate = h('input', { class: 'input', inputmode: 'decimal', value: g?.annualRate ? String(g.annualRate).replace('.', ',') : '', placeholder: 'Em branco = 0%' });
   let rateMode = g?.rateMode || 'annual';
   const rateModeSeg = segmented({ label: 'Tipo de taxa', size: 'segmented-sm', value: rateMode, options: [{ value: 'annual', label: '% ao ano' }, { value: 'monthly', label: '% ao mês' }], onChange: (v) => { rateMode = v; preview(); } });

@@ -1,5 +1,67 @@
 # Changelog
 
+## 3.0.0 — Personalização, confiabilidade e segurança
+
+Evolução incremental da 2.0: mesma identidade visual, mesmo banco local e mesmo formato de endereços. Nenhum dado existente é apagado ou recriado.
+
+### Correção crítica: erro ao abrir o Planejamento
+
+**Sintoma.** Ao abrir *Planejamento* aparecia `{(intermediate value)(intermediate value)…}[tab] is not a function` e a seção ficava em branco.
+
+**Causa.** A 1.0 tinha uma aba chamada `proximos` e gravava a aba aberta no `localStorage` (`gf.planning.tab`), com `proximos` como padrão. A 2.0 renomeou as abas, mas continuou lendo essa preferência **sem validar**: quem chegava em `#/planejamento` sem aba no endereço recebia o valor antigo, e o código procurava a função da aba num objeto literal (`{ recorrencias, programadas, … }[tab]()`). Para `proximos` — ou qualquer valor desconhecido — o resultado era `undefined`, e chamá-lo quebrava a renderização inteira.
+
+**Correção.**
+
+- Um único registro de abas (`PLANNING_TABS`) define rótulo, ícone, ação e renderização; rotas e preferências derivam dele.
+- `resolvePlanningTab` aceita apenas ids registrados. Valores antigos são convertidos (`proximos → projecao`) e regravados; qualquer outro valor volta ao padrão. A mesma validação (`readChoice`) vale para outras preferências de escolha.
+- Uma falha dentro de uma aba agora aparece só naquela aba, com opção de tentar de novo; o resto do app continua funcionando.
+- Teste de regressão cobre `proximos`, valores inválidos, todas as abas, troca de mês e ano, recarga, navegação repetida, banco vazio e com dados.
+
+### Funcionalidades adicionadas
+
+- **Repetir lançamento** no formulário: semanal, a cada duas semanas, mensal, a cada dois meses, trimestral, semestral, anual ou personalizado; início, término (inclusivo), quantidade e dia de vencimento opcionais. Repetição e parcelamento continuam separados.
+- **Ações em lançamentos existentes**: duplicar, registrar novamente hoje, registrar em outra data, transformar em recorrente (o original vira a primeira ocorrência, sem cópia) e editar.
+- **Escopo em recorrências**: editar ou excluir só esta ocorrência, esta e as próximas, ou a série inteira; lançamentos já realizados nunca são alterados retroativamente. Pausar, retomar e encerrar séries.
+- **Detalhamento dos indicadores**: cada indicador da visão geral abre a composição do valor, nível a nível até os lançamentos, e confere que a soma bate com o número exibido. *Disponível para investir* oferece simular aporte, criar meta, planejar investimento e ver projeção — sem registrar nada.
+- **Personalização**:
+  - modo *Personalizar* na Visão geral e em Investimentos: arrastar pela alça (mouse e toque) ou mover pelo teclado, tamanhos Pequeno/Médio/Metade/Grande/Largura completa, ocultar e adicionar componentes, cor de destaque da paleta ou personalizada (com ajuste automático de contraste), tipo de gráfico adequado a cada dado, desfazer e restaurar padrão;
+  - Planejamento: ordem e visibilidade das abas;
+  - Lançamentos: lista ou tabela, informações visíveis e colunas organizáveis;
+  - Configurações: ordem dos grupos (nenhum pode ser ocultado) e um grupo *Personalização* com restauração por seção ou de toda a aparência, separada dos dados financeiros;
+  - a personalização fica no banco local, entra no backup e é validada ao carregar: uma configuração corrompida nunca impede a abertura.
+- **Densidade da interface**: Compacta, Padrão e Confortável, por tokens de CSS (sem zoom).
+- **Backup 2.0**:
+  - nome `Fluxo-backup-AAAA-MM-DD_HH-MM.json`, metadados (id, data, versões, contagens, período) e soma SHA-256;
+  - proteção opcional por senha (AES-256-GCM com PBKDF2);
+  - prévia da restauração com data, versão, contagens, contas, metas, período, o que será substituído e inconsistências;
+  - oferta de backup dos dados atuais antes de restaurar e snapshots internos (os três últimos);
+  - lembrete configurável e data do último backup.
+- **Diagnóstico de armazenamento**: estado do banco, versão do esquema, contagens, último backup, estimativa de uso, armazenamento persistente e inconsistências.
+- **Sobre o Fluxo**: o que é, para que serve, como funciona, onde ficam os dados, backups e limitações.
+- **Nova identidade**: símbolo original (uma origem e um destino ligados por uma curva contínua), logotipo, marca nominativa, versões monocromática, clara e escura, e favicon, todos em SVG.
+
+### Melhorias
+
+- Tipografia 1 px maior no padrão (secundários +0,5 a 1 px), alturas de controles e espaçamentos ajustados; números tabulares em valores.
+- Tokens de duração centralizados (clique, hover, expansão, modal, reorganização e gráficos), animações só com `transform`/`opacity` e respeito a *movimento reduzido*.
+- Gráficos de distribuição em barras horizontais, barras verticais, rosca ou tabela; a rosca é desativada quando há valores negativos. Período e totais visíveis nos títulos.
+- Investimentos: evolução do patrimônio em área, linha ou tabela.
+
+### Segurança e integridade
+
+- **Content Security Policy** sem `unsafe-inline` e sem `unsafe-eval`; script de inicialização movido para `js/boot.js`; `referrer` desativado.
+- **Validação estrutural** de todo registro gravado ou importado: chaves proibidas (`__proto__`, `constructor`, `prototype`), profundidade, tamanho, números finitos e tipos.
+- **Concorrência**: revisão por registro (`rev`); gravar sobre uma versão desatualizada gera conflito em vez de sobrescrever. Restaurações coordenadas entre abas (BroadcastChannel e Web Locks).
+- **Atomicidade**: criação de recorrência com primeira ocorrência paga, conversão em recorrente, edição de série e restauração acontecem em uma única transação.
+- **Ocorrências com identificador determinístico** (`regra:data`), impedindo duplicidade criada pelo sistema.
+- *Apagar dados financeiros* agora preserva a aparência, como a tela informava.
+
+### Migração
+
+- Esquema do banco **v2 → v3**: só adiciona o repositório `snapshots`. Nenhum dado existente é alterado ou removido; a migração não apaga nem recria o banco.
+- Preferências antigas de abas e gráficos são convertidas ou voltam ao padrão automaticamente.
+- Backups da 1.0 e da 2.0 continuam aceitos.
+
 ## 2.0.0 — Fluxo
 
 O Guia Financeiro passa a se chamar **Fluxo**. Esta versão evolui a 1.0 sem trocar a arquitetura, o banco local ou o endereço de publicação.
