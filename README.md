@@ -28,7 +28,7 @@ Ele não movimenta dinheiro, não se conecta a bancos e não envia seus dados pa
 1. Acesse o Fluxo pelo navegador.
 2. Registre suas receitas e despesas com **Novo lançamento** (atalho `N`). Valor, descrição e data bastam para começar.
 3. Organize os lançamentos por categoria, bloco e fonte. Isso deixa os gráficos e resumos mais úteis.
-4. Configure as despesas recorrentes usando **Repetir** no próprio formulário.
+4. Para contas que se repetem, escolha **Repetir → Mensal** no próprio formulário. Para levar um lançamento já salvo a outros meses, use **Replicar** na linha dele.
 5. Acompanhe o resumo mensal na **Visão geral**.
 6. Planeje os próximos meses em **Planejamento**: compromissos, calendário e projeção.
 7. Personalize as telas do seu jeito em **Personalizar**.
@@ -47,20 +47,34 @@ Ele não movimenta dinheiro, não se conecta a bancos e não envia seus dados pa
 
 ## Recorrências e planejamento
 
-Quase tudo pode se repetir, independentemente de como você paga: Pix, dinheiro, débito, cartão de crédito, vale-alimentação ou outra fonte. A fonte pode até ficar para depois: escolha no momento de pagar.
+Quase tudo pode se repetir, independentemente de como você paga: Pix, dinheiro, débito, cartão de crédito, vale-alimentação ou outra fonte. A fonte pode até ficar para depois e ser escolhida no momento de pagar.
 
-Ao escolher **Repetir → Mensalmente**, o Fluxo oferece quatro jeitos:
+**Uma conta todo mês.** No formulário, em **Repetir**, escolha **Mensal** e salve. O Fluxo usa a descrição, o valor, a categoria, a fonte e o dia da data, sem data de término. Os próximos meses já aparecem como previstos.
 
-- **Em um dia específico.** Internet de R$ 100 todo dia 10.
-- **Em mais de um dia do mês.** R$ 50 nos dias 5 e 20 (R$ 100 no mês).
-- **Com datas flexíveis.** Duas consultas de R$ 50 por mês, com datas a combinar. O mês já conta R$ 100 no planejamento, e você define cada data quando souber, sem o Fluxo inventar datas.
-- **Como previsão mensal.** Até R$ 400 de combustível. Cada abastecimento registrado consome a previsão: depois de R$ 300 gastos, restam R$ 100. Se passar do previsto, o excedente aparece. Se sobrar, você encerra o mês e a sobra não vira despesa.
+**Um lançamento que já existe.** Clique em **Replicar** (o ícone ao lado do valor, ou no menu ⋯) e escolha:
 
-Também há **A cada 14 dias**, com intervalos reais: começando em 04/11, as ocorrências caem em 04/11, 18/11, 02/12, 16/12 e 30/12. Por isso, dezembro pode ter três ocorrências.
+- **Próximo mês**, **próximos 3, 6 ou 12 meses** ou **meses escolhidos**: cria cópias previstas nesses meses;
+- **Todos os meses**: o lançamento passa a se repetir sem fim, e ele mesmo vira a primeira ocorrência (nada é duplicado).
 
-Em **Planejamento → Compromissos**, cada mês tem sua própria lista, com o progresso ("1 de 2 consultas pagas · R$ 50 restantes"). Pagar em novembro não marca dezembro. Ao pagar, você pode confirmar a data, o valor e a fonte, registrar um pagamento parcial e desfazer, se precisar.
+Dá para manter o mesmo dia, escolher outro dia, usar vários dias do mês ou deixar a data a definir. As cópias começam como **previstas**: o "pago" nunca é copiado. Também é possível abrir o lançamento e escolher **Repetir → Mensal** ali mesmo.
 
-Lançamentos avulsos também podem ser **copiados ou replicados** para outros meses, ou **transformados em recorrentes** sem criar cópias.
+**Quando a conta não tem um dia só.** Em **Mensal**, responda duas perguntas:
+
+- **Vezes por mês** e **Datas**:
+  - internet de R$ 100 todo dia 10: 1 vez, dia fixo;
+  - R$ 50 nos dias 5 e 20: 2 vezes, dias fixos (R$ 100 no mês);
+  - duas consultas de R$ 50 com datas a combinar: 2 vezes, a definir. O mês já conta R$ 100, e você define cada data quando souber, sem o Fluxo inventar datas.
+- **Valor variável**: até R$ 400 de combustível no mês. Cada abastecimento registrado consome a previsão: depois de R$ 300 gastos, restam R$ 100. Se passar do previsto, o excedente aparece. Se sobrar, você encerra o mês e a sobra não vira despesa.
+
+Em **Personalizar** há **toda semana**, **todo ano**, outros intervalos e **a cada 14 dias**, com intervalos reais: começando em 04/11, as ocorrências caem em 04/11, 18/11, 02/12, 16/12 e 30/12. Por isso, dezembro pode ter três ocorrências.
+
+Em **Planejamento → Compromissos**, cada mês tem sua própria lista. O destaque é **quanto falta pagar**, e abaixo vem o progresso ("1 de 2 pagas"). Pagar em novembro não marca dezembro. Em cada ocorrência você pode:
+
+- marcar como paga com um clique;
+- confirmar com outro valor, data ou fonte (inclusive pagamento parcial) e desfazer;
+- alterar a data ou o valor;
+- ignorar ou cancelar só aquela vez;
+- adicionar uma ocorrência extra no mês.
 
 ## Investimentos e metas
 

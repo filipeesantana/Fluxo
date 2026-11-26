@@ -59,6 +59,9 @@ export function renderPlanning(root, sub) {
     h('button', { class: 'btn btn-ghost btn-icon btn-sm subnav-more', type: 'button', 'aria-label': 'Organizar abas', title: 'Organizar abas', onclick: () => arrangeTabs(rerender) }, icon('sliders', 'icon-sm')));
   const body = h('div', { class: 'stack-lg' });
   put(root, pageHead('Planejamento', { sub: tab.sub, controls: tab.month ? monthNav() : null, actions: tab.action() }), nav, body);
+  // Aba atual sempre visível quando as abas não cabem (celular, janelas estreitas).
+  const cur = nav.querySelector('[aria-current="page"]');
+  if (cur && nav.scrollWidth > nav.clientWidth) nav.scrollLeft = Math.max(0, cur.offsetLeft - (nav.clientWidth - cur.offsetWidth) / 2);
   // Erro localizado: uma aba com falha não derruba a seção nem o restante do app.
   try {
     tab.render(body, rerender);

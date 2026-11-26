@@ -1,6 +1,6 @@
 import { h, icon, debounce, put } from '../utils/dom.js';
 import { formatMoney } from '../utils/money.js';
-import { formatDayHeading, today, formatMonth, formatDateShort } from '../utils/dates.js';
+import { formatDayHeading, today, formatMonth, formatDateShort, byDateDesc } from '../utils/dates.js';
 import * as repo from '../database/repository.js';
 import { monthItems, expenseValue, NONE } from '../services/finance.js';
 import { fold } from '../services/suggest.js';
@@ -81,6 +81,8 @@ function searchText(t, ctx) {
   return v;
 }
 
+let filtersOpen = false; // estado do painel de filtros no celular (mantido entre renderizações)
+
 function filterItems() {
   const f = ui.entries;
   const ctx = repo.context();
@@ -102,7 +104,7 @@ function filterItems() {
     return true;
   });
   const cmp = {
-    date: (a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : (b.createdAt || 0) - (a.createdAt || 0)),
+    date: byDateDesc,
     amount: (a, b) => b.amount - a.amount,
     description: (a, b) => a.description.localeCompare(b.description, 'pt-BR'),
   }[f.sort] || ((a, b) => 0);
@@ -153,15 +155,23 @@ export function renderEntries(root) {
   sort.addEventListener('change', () => { f.sort = sort.value; emitUI('filter'); });
 
   const active = ['type', 'status', 'categoryId', 'blockId', 'sourceId', 'query'].filter((k) => f[k]);
+  const clear = active.length ? h('button', { class: 'btn btn-ghost btn-sm', type: 'button', onclick: () => { resetEntriesFilter(); emitUI('filter'); } }, icon('x', 'icon-sm'), 'Limpar filtros') : null;
+  // No celular os filtros secundários ficam recolhidos: a lista aparece logo abaixo da busca.
+  const narrow = window.matchMedia?.('(max-width: 720px)').matches;
+  const nActive = ['type', 'status', 'categoryId', 'blockId', 'sourceId'].filter((k) => f[k]).length;
+  const more = [type, status,
+    selectFilter('Categoria', 'categoryId', categoryOptions('expense').concat(categoryOptions('income')), 'Toda categoria'),
+    selectFilter('Bloco', 'blockId', blockOptions(), 'Todo bloco'),
+    selectFilter('Fonte', 'sourceId', accountOptions(), 'Toda fonte'),
+    group, sort];
   const filters = h('div', { class: 'filters' },
     h('div', { class: 'search-wrap' }, icon('search', 'icon-sm'), search),
-    h('div', { class: 'filter-row' },
-      f.scope === 'month' ? null : null, scope, type, status,
-      selectFilter('Categoria', 'categoryId', categoryOptions('expense').concat(categoryOptions('income')), 'Toda categoria'),
-      selectFilter('Bloco', 'blockId', blockOptions(), 'Todo bloco'),
-      selectFilter('Fonte', 'sourceId', accountOptions(), 'Toda fonte'),
-      group, sort,
-      active.length ? h('button', { class: 'btn btn-ghost btn-sm', type: 'button', onclick: () => { resetEntriesFilter(); emitUI('filter'); } }, icon('x', 'icon-sm'), 'Limpar filtros') : null),
+    narrow
+      ? h('div', { class: 'filter-row' }, scope,
+        h('details', { class: 'filters-more', open: filtersOpen || null, ontoggle: (ev) => { filtersOpen = ev.currentTarget.open; } },
+          h('summary', { class: 'btn btn-sm' }, icon('sliders', 'icon-sm'), nActive ? `Filtros · ${nActive}` : 'Filtros'),
+          h('div', { class: 'filter-row' }, ...more)), clear)
+      : h('div', { class: 'filter-row' }, scope, ...more, clear),
   );
 
   const vo = entryViewOptions();

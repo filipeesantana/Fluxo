@@ -62,7 +62,7 @@ object-src 'none'; base-uri 'none'; form-action 'none'
   "version": 3,
   "backupId": "uuid",
   "createdAt": "ISO 8601",
-  "appVersion": "3.1.0",
+  "appVersion": "3.1.1",
   "schemaVersion": 4,
   "counts": { "transactions": 0, ... },
   "period": { "from": "AAAA-MM-DD", "to": "AAAA-MM-DD" } | null,

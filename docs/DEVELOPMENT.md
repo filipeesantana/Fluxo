@@ -33,6 +33,9 @@ tests/                  unitários (node:test), navegador (Playwright) e escala
 - Recorrências geram ocorrências **projetadas**. Quando uma é paga, editada ou recebe data, vira um lançamento com a mesma **chave estável** e a projeção correspondente deixa de existir.
 - Chaves de ocorrência: `AAAA-MM-DD` (data única), `AAAA-MM@dia` (vários dias), `AAAA-MM#n` (datas flexíveis), `AAAA-MM` (previsão mensal). O id do lançamento é `regra:chave`, e o IndexedDB tem índice único `[recurrenceId, occurrenceKey]`.
 - Previsão mensal: gastos com `forecastId` consomem o valor planejado; só o restante entra como `forecastLeft`. Não é obrigação, então não soma em "compromissos pendentes".
+- Replicar × repetir: "Replicar" para períodos finitos cria **cópias avulsas previstas** (`replicateTransaction`, ids `operação:mês` ou `operação:mês@dia`). "Todos os meses" e "Repetir" criam uma **série** (`convertToRecurring`/`createRecurrence`) em que o lançamento de origem ocupa a vaga do mês (`firstKeyFor`), sem cópia.
+- Ocorrência paga fora do mês dela mantém a competência do compromisso (`month` = período, `monthManual`), exceto no cartão; `plannedDate` e `plannedAmount` permitem desfazer.
+- Ocorrências extras usam a chave `AAAA-MM#n` além das vagas da regra; ids de lançamento têm no máximo 64 caracteres.
 - Identidades conferidas por testes: `sobra = recebidas + previstas − realizadas − pendentes − previsões restantes`; `despesas = fixas + parcelas + pontuais + previsões`.
 
 ### Grade personalizável

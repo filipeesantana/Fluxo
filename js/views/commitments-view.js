@@ -113,12 +113,15 @@ export function renderCommitments(container) {
       h('button', { class: 'btn btn-primary', type: 'button', onclick: () => openRecurrenceForm() }, icon('plus', 'icon-sm'), 'Nova recorrência'))));
     return;
   }
-  const summary = h('div', { class: 'commit-summary' },
-    h('div', { class: 'cal-stat' }, h('b', { class: 'num' }, formatMoney(t.total)), h('span', null, 'previsto em contas do mês')),
-    h('div', { class: 'cal-stat' }, h('b', { class: 'num pos' }, formatMoney(t.paid)), h('span', null, 'já pago')),
-    h('div', { class: 'cal-stat' }, h('b', { class: `num ${t.left ? 'warn' : ''}` }, formatMoney(t.left)), h('span', null, 'restante')),
-    h('div', { class: 'cal-stat' }, h('b', { class: 'num' }, `${t.doneCount} de ${t.count}`), h('span', null, 'ocorrências concluídas')),
-    res.forecasts.length ? h('div', { class: 'cal-stat' }, h('b', { class: 'num' }, `${formatMoney(t.forecastUsed)} de ${formatMoney(t.forecastPlanned)}`), h('span', null, 'usado nas previsões')) : null);
+  // Resumo com hierarquia: quanto falta em destaque; o resto em uma linha de apoio.
+  const summary = h('div', { class: 'commit-sum' },
+    h('div', { class: 'commit-sum-main' },
+      h('span', { class: 'faint small' }, 'Falta pagar'),
+      h('strong', { class: `num commit-sum-value ${t.left ? 'warn' : 'pos'}` }, formatMoney(t.left))),
+    h('div', { class: 'commit-sum-side grow' },
+      progress(t.total > 0 ? t.paid / t.total : 0, { tone: t.left ? undefined : 'ok', small: true, label: `${formatMoney(t.paid)} de ${formatMoney(t.total)} pagos` }),
+      h('p', { class: 'small muted' }, h('strong', { class: 'num' }, formatMoney(t.paid)), ` de ${formatMoney(t.total)} pagos · ${t.doneCount} de ${t.count} ${t.count === 1 ? 'ocorrência concluída' : 'ocorrências concluídas'}`),
+      res.forecasts.length ? h('p', { class: 'small faint' }, `Previsões: ${formatMoney(t.forecastUsed)} de ${formatMoney(t.forecastPlanned)} usados`) : null));
   const blocks = [panel(`Compromissos de ${formatMonth(m)}`, { hint: 'cada mês tem seu próprio estado' }, summary)];
   if (open.length) blocks.push(h('div', { class: 'commit-grid' }, ...open.map(commitmentCard)));
   if (res.forecasts.length) blocks.push(h('section', { class: 'stack' }, h('h2', { class: 'section-title' }, 'Previsões do mês'), h('div', { class: 'commit-grid' }, ...res.forecasts.map(forecastCard))));

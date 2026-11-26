@@ -3,7 +3,8 @@ import { STORES } from './schema.js';
 import { VALIDATORS, normalizeName, sameName } from '../services/validation.js';
 import { competenceOf, isCard, billFor } from '../services/cards.js';
 import { buildInstallments } from '../services/installments.js';
-import { endDateForCount, ruleOccurrences, ruleMode, parseDays } from '../services/recurrence.js';
+import { endDateForCount, ruleOccurrences, ruleMode, parseDays, firstKeyFor } from '../services/recurrence.js';
+export { firstKeyFor };
 import { createContext } from '../services/finance.js';
 import { today, addDays, currentMonth, monthOf, addMonths, firstDay, lastDay, dateInMonth } from '../utils/dates.js';
 import { uid } from '../utils/dom.js';
@@ -433,27 +434,6 @@ export async function createRecurrence(input, firstOccurrence = null, firstKey =
   }
   await apply(ops);
   return rule;
-}
-
-/**
- * Chave da ocorrência deste mês que um lançamento já realizado (ou com data)
- * representa ao virar a primeira ocorrência de uma série. Nunca cria uma
- * segunda ocorrência: o próprio lançamento passa a ocupar a vaga do mês.
- */
-export function firstKeyFor(rule, date, period) {
-  const mode = ruleMode(rule);
-  const m = date ? monthOf(date) : period;
-  if (mode === 'forecast') return null;
-  if (mode === 'flex') return `${m}#1`;
-  if (mode === 'days') {
-    const slots = rule.days || [];
-    const d = date ? Number(date.slice(8, 10)) : slots[0];
-    // O dia exato; senão a vaga mais próxima anterior (pago com atraso); senão a primeira.
-    const pick = slots.includes(d) ? d : [...slots].reverse().find((x) => x < d) ?? slots[0];
-    return `${m}@${pick}`;
-  }
-  if (rule.frequency === 'monthly' && (rule.interval || 1) === 1) return dateInMonth(m, rule.anchorDay || Number(rule.startDate.slice(8, 10)));
-  return date;
 }
 
 /**

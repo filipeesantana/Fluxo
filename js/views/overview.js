@@ -1,6 +1,6 @@
 import { h, icon, put } from '../utils/dom.js';
 import { formatMoney, formatPercent } from '../utils/money.js';
-import { currentMonth, today, parseISO, formatDateShort, monthDiff, formatMonthShort, formatMonth, addMonths, dayDiff, monthOf } from '../utils/dates.js';
+import { currentMonth, today, parseISO, formatDateShort, monthDiff, formatMonthShort, formatMonth, addMonths, dayDiff, monthOf, byDateDesc } from '../utils/dates.js';
 import * as repo from '../database/repository.js';
 import { summarize, cashPosition, NONE, expenseValue } from '../services/finance.js';
 import { monthInsights, surplusTrend } from '../services/insights.js';
@@ -70,7 +70,7 @@ export function openGroupPanel(field, key, month = ui.month) {
   const dimension = { categoryId: 'Categoria', blockId: 'Bloco', sourceId: 'Fonte' }[field];
   const s = summarize(repo.context(), month);
   const items = s.items.filter((it) => (it.type === 'expense' || it.type === 'refund') && ((it[field] || NONE) === key))
-    .sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
+    .sort(byDateDesc);
   const total = items.reduce((t, it) => t + expenseValue(it), 0);
   const planned = items.filter((i) => i.status !== 'done').reduce((t, it) => t + expenseValue(it), 0);
   const list = h('div', { class: 'tx-list', role: 'list' }, ...items.map((it) => txRow(it, { onOpen: (x) => { m.close(); openItem(x); }, onToggle: toggleStatus, showDate: true })));
@@ -171,17 +171,17 @@ function distWidget(title, hint, groups, field, labelOf, emptyText, emptyAction)
 
 function movementsWidget(s, m, isFuture) {
   return () => {
-    const items = [...s.items].sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : (b.createdAt || 0) - (a.createdAt || 0)));
+    const items = [...s.items].sort(byDateDesc);
     const invEvents = repo.list('investmentEvents').filter((e) => e.type !== 'balance' && monthOf(e.date) === m);
     const LIMIT = 14;
     const list = h('div', { class: 'tx-list', role: 'list' });
-    let lastDate = null;
-    const merged = [...items.map((it) => ({ date: it.date, it })), ...invEvents.map((e) => ({ date: e.date, ev: e }))].sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0)).slice(0, LIMIT);
+    let lastDate;
+    const merged = [...items.map((it) => ({ date: it.date, createdAt: it.createdAt, it })), ...invEvents.map((e) => ({ date: e.date, ev: e }))].sort(byDateDesc).slice(0, LIMIT);
     for (const row of merged) {
       if (row.date !== lastDate) {
         lastDate = row.date;
         const dayTotal = items.filter((x) => x.date === row.date).reduce((t, x) => t + expenseValue(x), 0);
-        list.append(h('div', { class: 'tx-day', dataset: { day: row.date } }, h('span', null, formatDateShort(row.date)), dayTotal ? h('span', { class: 'tx-day-total' }, `− ${formatMoney(dayTotal)}`) : null));
+        list.append(h('div', { class: 'tx-day', dataset: { day: row.date || '' } }, h('span', null, row.date ? formatDateShort(row.date) : 'Data a definir'), dayTotal ? h('span', { class: 'tx-day-total' }, `− ${formatMoney(dayTotal)}`) : null));
       }
       list.append(row.ev ? investRow(row.ev) : txRow(row.it, { onOpen: openItem, onMenu: itemMenu, onToggle: toggleStatus }));
     }

@@ -1010,3 +1010,16 @@ a.signal:hover { background: var(--hover); text-decoration: none; }
 .repeat-box .f-dates .segmented { width: auto; }
 .repeat-grid { align-items: start; }
 .repeat-box { gap: 10px; padding: 12px 14px; }
+/* Abas do Planejamento: sem ícones e mais justas quando o espaço aperta (todas visíveis no desktop). */
+@media (max-width: 1640px) { .subnav-link .icon { display: none; } .subnav-link { padding: 0 11px; } }
+.filters-more { display: block; }
+.filters-more[open] { flex-basis: 100%; order: 3; }
+.filters-more > summary { list-style: none; display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
+.filters-more > summary::-webkit-details-marker { display: none; }
+.filters-more[open] > .filter-row { margin-top: 8px; }
+/* Resumo dos compromissos: um número principal e uma linha de apoio. */
+.commit-sum { display: flex; align-items: center; gap: 24px; flex-wrap: wrap; }
+.commit-sum-main { display: flex; flex-direction: column; gap: 2px; min-width: 160px; }
+.commit-sum-value { font-size: calc(var(--fs-xl) * 1.15); font-weight: 680; letter-spacing: -0.01em; line-height: 1.15; }
+.commit-sum-side { display: flex; flex-direction: column; gap: 6px; min-width: 220px; }
+.commit-sum-side p { margin: 0; }

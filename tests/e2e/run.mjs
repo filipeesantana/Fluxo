@@ -113,6 +113,14 @@ async function createInline(modal, name, value, kind) {
   await page.waitForFunction(([n, v]) => document.querySelector(`[data-picker="${n}"] .picker-value`)?.textContent === v, [name, value]);
 }
 
+/** Espera o diálogo terminar de abrir (o foco inicial vai para o primeiro campo um quadro depois). */
+async function settled(modal) {
+  await modal.waitFor();
+  const page = modal.page();
+  const sel = await modal.evaluate((el) => `.${[...el.classList].filter((c) => !c.startsWith('is-')).join('.')}`);
+  await page.waitForFunction((s) => Boolean(document.activeElement?.closest(s)), sel);
+}
+
 async function save(modal) {
   await modal.locator('.modal-foot button[type=submit]').click();
   await modal.waitFor({ state: 'detached' });
@@ -2208,7 +2216,7 @@ async function run() {
   await test('3.1 — Cenário 22: assinatura institucional fixa, com a versão central, em todos os modos', async () => {
     const { context, page } = await newPage();
     const version = await page.evaluate(async () => (await import('./js/version.js')).APP_VERSION);
-    eq(version, '3.1.0', 'versão');
+    eq(version, '3.1.1', 'versão');
     await waitText(page, '.sidebar .signature', `Desenvolvido por Filipe Santana FS v${version}`);
     assert(await page.locator('.sidebar .signature .sig-by').isVisible(), 'visível no desktop');
     await page.getByRole('button', { name: 'Personalizar' }).click();
@@ -2341,7 +2349,7 @@ async function run() {
     const k = journey();
     await k.tap(listRows(page, 'Almoço').locator('.tx-main'));
     const e = page.locator('.entry-modal');
-    await e.waitFor();
+    await settled(e);
     await k.tap(e.locator('.repeat-seg [data-value="monthly"]'));
     await k.tap(e.locator('.modal-foot button[type=submit]'));
     await e.waitFor({ state: 'detached' });
@@ -2397,6 +2405,7 @@ async function run() {
     await card.locator('.occ-row').nth(0).locator('button[aria-haspopup="menu"]').click();
     await page.locator('.menu-item', { hasText: 'Confirmar pagamento…' }).click();
     const d = page.locator('.pay-modal');
+    await settled(d);
     await d.locator('input[name=payAmount]').fill('60');
     await d.getByRole('button', { name: 'Confirmar pagamento' }).click();
     await waitText(page, async () => JSON.stringify(await sumOf(page, '2026-12')), JSON.stringify({ done: 6000, pending: 5000, total: 11000, left: 0 }));
@@ -2404,6 +2413,7 @@ async function run() {
     await card.locator('.occ-row').nth(1).locator('button[aria-haspopup="menu"]').click();
     await page.locator('.menu-item', { hasText: 'Alterar data…' }).click();
     const dd = page.locator('.occ-date-modal');
+    await settled(dd);
     await dd.locator('input[name=occDate]').fill('2026-12-22');
     await dd.getByRole('button', { name: 'Salvar data' }).click();
     // Paga hoje (25/11) por R$ 60, a consulta continua no compromisso de dezembro.
@@ -2412,6 +2422,7 @@ async function run() {
     // Ocorrência extra (terceira consulta) só em dezembro.
     await card.getByRole('button', { name: 'Adicionar ocorrência' }).click();
     const x = page.locator('.extra-modal');
+    await settled(x);
     await x.locator('input[name=extraDate]').fill('2026-12-28');
     await x.getByRole('button', { name: 'Adicionar' }).dblclick();
     await x.waitFor({ state: 'detached' });
@@ -2603,6 +2614,7 @@ async function run() {
     await page.goto(`${base}#/lancamentos`);
     await listRows(page, 'Almoço').locator('.tx-main').click();
     m = page.locator('.entry-modal');
+    await settled(m);
     await m.locator('input[name=amount]').fill('35');
     await save(m);
     eq(await api(page, (repo) => repo.list('transactions').find((t) => t.description === 'Almoço').amount), 3500, 'edição persistida');
